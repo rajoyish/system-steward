@@ -151,6 +151,10 @@ class MaintenanceScreen(Screen):
     @on(Select.Changed, "#maintenance-feature")
     def feature_changed(self, event):
         if event.value != Select.BLANK and event.value != self.kind and not self.busy:
+            if event.value == "awake":
+                self.query_one("#maintenance-feature", Select).value = self.kind
+                self.app.open_system_tool("awake")
+                return
             self.kind = event.value
             self.action_refresh()
 

@@ -43,12 +43,15 @@ Without a folder argument, the app audits common Chrome, Adobe, developer, proje
 - **Remove applications:** review application bundles and user data matched to their exact bundle IDs.
 - **Run maintenance:** preview and select DNS refresh, Quick Look reset, application registration refresh, and Spotlight reindexing.
 - **Configure Touch ID for sudo:** review the proposed local PAM configuration before applying it.
+- **Keep Awake (macOS):** temporarily prevent idle, display, or disk sleep with a timer, a watched PID, or a wrapped command.
 
 Scans run in the background. The dashboard includes disk usage cards and an expandable system section with live readings and tool previews. Opening a tool or preview does not apply changes.
 
 ## Navigation
 
 Use a terminal at least 64 columns × 24 rows; 140 × 40 gives the full layout. The sidebar and details pane collapse on smaller terminals. The interface supports mouse input, TrueColor, `NO_COLOR`, and Unicode symbols without a custom icon font.
+
+The **Explore** category tabs sit above the storage table. Click a category or focus the tabs and use Left/Right to switch. The bar scrolls through categories on narrower terminals and remains available when the sidebar is hidden.
 
 | Key | Action |
 | --- | --- |
@@ -63,6 +66,7 @@ Use a terminal at least 64 columns × 24 rows; 140 × 40 gives the full layout. 
 | c | Preview Chrome cleanup |
 | a | Preview Adobe cleanup; g opens its purge guide |
 | m | Open system tools |
+| k | Open Keep Awake (macOS caffeinate) |
 | d | Expand or collapse live dashboard readings and tools |
 | ? | Show help |
 | Esc | Dismiss a dialog or leave cleanup |
@@ -113,6 +117,36 @@ Eligible locations under `~/Library` include:
 Preferences, presets, plugins, scripts, workspaces, Lightroom catalogs, catalog sidecars, and `.lrcat-data` are protected. Candidates containing protected folders, catalogs, or symlinks are skipped and rechecked before deletion. The Adobe Application Support root and Library Preferences root are never cleanup targets.
 
 Prefer Adobe's built-in purge controls for media databases where available. Save and close projects first, purge from the app's cache settings, verify completion, then quit and relaunch before editing. Menu labels vary by version. See Adobe's [manual media cache instructions](https://helpx.adobe.com/premiere/desktop/troubleshooting/media-issues/delete-media-cache-files-manually.html), [After Effects storage guidance](https://helpx.adobe.com/after-effects/desktop/memory-storage-performance/memory-and-storage/memory-storage1.html), and [Lightroom Classic performance guidance](https://helpx.adobe.com/lightroom-classic/desktop/technical-support/performance-guidelines/optimize-performance-lightroom.html).
+
+## Keep Awake (macOS)
+
+Press **k**, click **Keep awake** in the sidebar, or choose **Keep Awake (macOS)** from the System tools menu. It uses the built-in `/usr/bin/caffeinate`; no extra background app or System Settings change is required. This feature is macOS-only.
+
+Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d`), **Disk idle sleep** (`-m`), or a combination. Then choose how the session ends:
+
+- **When stopped / timer ends:** leave the timer blank to run until stopped, or enter seconds such as `3600` for an hour.
+- **When an existing PID exits:** enter a running process ID. An optional timer ends the session earlier. Stopping Keep Awake leaves the watched process running.
+- **When a command finishes:** enter a command and its working folder. The command runs in the background with no interactive input; recent output and its exit status appear in the tool. Quoted arguments are supported. Shell operators and expansions are not interpreted. This mode follows the command instead of a timer.
+
+Choose **Review & start** and inspect the exact command before confirming. Only one app-managed session runs at a time. You can return to storage browsing while it runs; the sidebar shows when Keep Awake is active. Reopen the tool to see its PID, remaining time, and output, or choose **Stop session**.
+
+App-managed sessions stop when you quit System Steward. **Stopping a wrapped-command session or quitting the app also terminates that command and its process group**, with confirmation. macOS still controls explicit Sleep, lid-close behavior, and low-battery sleep. Preventing disk idle sleep is a request, not continuous disk activity.
+
+For a session independent of System Steward, macOS also supports these Terminal commands:
+
+```zsh
+caffeinate                 # Until Ctrl-C; prevents idle system sleep
+caffeinate -t 3600         # One hour
+caffeinate -di             # Keep the display and system from idle sleeping
+caffeinate -m              # Prevent disk idle sleep
+caffeinate -i your_command # Until the command exits
+caffeinate -i -w 12345     # Until PID 12345 exits
+caffeinate -di &           # Run in the shell background
+awake_pid=$!               # Save this session's PID
+kill "$awake_pid"          # Stop that background session
+```
+
+See `man caffeinate` on your Mac or [Apple's caffeinate source](https://github.com/apple-oss-distributions/PowerManagement/blob/main/caffeinate/caffeinate.c) for the native behavior.
 
 ## System maintenance and readings
 

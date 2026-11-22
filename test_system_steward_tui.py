@@ -5,12 +5,13 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from textual.widgets import Button, DataTable, Input, Select, SelectionList
+from textual.widgets import Button, DataTable, Input, Select, SelectionList, Tabs
 
 import adobe_cleanup
 import chrome_cleanup
 from cleanup_selection import cleanup_groups, selection_plan
 from system_steward_tui import CleanupScreen, ConfirmDialog, InfoDialog, SystemStewardApp
+from system_steward import Entry
 
 
 class SelectionTests(unittest.TestCase):
@@ -62,6 +63,40 @@ class UITests(unittest.IsolatedAsyncioTestCase):
 
     def app(self):
         return SystemStewardApp(root=self.root, home=self.home, timeout=3)
+
+    async def test_explore_tabs_filter_above_table_and_follow_folder_navigation(self):
+        entries = [Entry("Browser cache", str(self.root / "notes.md"), "Browsers"),
+                   Entry("Project", str(self.root / "website"), "Projects")]
+        app = SystemStewardApp(home=self.home, timeout=3)
+        with patch("system_steward_tui.audit_entries", return_value=entries):
+            async with app.run_test(size=(140, 40)) as pilot:
+                await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
+                navigation = app.query_one("#navigation", Tabs)
+                table = app.query_one("#files", DataTable)
+                self.assertIs(navigation.parent.parent, app.query_one("#main-panel"))
+                self.assertLessEqual(navigation.region.bottom, table.region.y)
+                self.assertEqual(table.row_count, 2)
+                await pilot.click("#Browsers")
+                await self.wait_for(pilot, lambda: app.group == "Browsers" and table.row_count == 1)
+                await pilot.press("right")
+                await self.wait_for(pilot, lambda: app.group == "Creative" and table.row_count == 0)
+                navigation.active = "Projects"
+                await self.wait_for(pilot, lambda: app.group == "Projects" and table.row_count == 1)
+                app.explore()
+                await self.wait_for(pilot, lambda: app.root == self.root / "website" and app.scan.finished.is_set())
+                self.assertEqual(navigation.active, "All")
+                app.action_back()
+                await self.wait_for(pilot, lambda: app.root is None and app.scan.finished.is_set())
+                self.assertEqual(navigation.active, "Projects")
+                await pilot.resize_terminal(80, 24)
+                await pilot.pause()
+                self.assertFalse(app.query_one("#sidebar").display)
+                self.assertTrue(navigation.visible)
+                self.assertEqual(navigation.region.height, 2)
+                self.assertGreater(table.region.height, 0)
+                navigation.focus()
+                await pilot.press("right", "right")
+                await self.wait_for(pilot, lambda: app.group == "Apps")
 
     async def test_explorer_search_navigation_resize_and_export(self):
         app = self.app()

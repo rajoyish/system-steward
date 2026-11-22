@@ -14,6 +14,7 @@ FEATURES = (
     ("Optimize System", "optimize"), ("Purge Dev Artifacts", "purge"),
     ("Clean Installers", "installer"), ("Uninstall App", "uninstall"),
     ("Touch ID for Sudo", "touchid"),
+    ("Keep Awake (macOS)", "awake"),
 )
 ARTIFACTS = {"node_modules", ".next", ".nuxt", ".venv", "venv", "target", "dist", "build"}
 MANIFESTS = {"package.json", "Cargo.toml", "pyproject.toml", "requirements.txt", "go.mod", "composer.json", "pom.xml", "build.gradle"}

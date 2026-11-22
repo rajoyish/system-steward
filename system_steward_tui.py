@@ -12,15 +12,16 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.theme import Theme
-from textual.widgets import Button, DataTable, Footer, Input, Label, OptionList, ProgressBar, Select, SelectionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets import Button, DataTable, Footer, Input, Label, ProgressBar, Select, SelectionList, Static, Tab, Tabs
 
 import adobe_cleanup
 import chrome_cleanup
 from app_identity import APP_NAME, AUTHOR, BRAND, VERSION
 from dashboard import DashboardCard, METRICS, TOOLS, metric_values
 from system_status import SystemSampler
-from maintenance_tui import MaintenanceScreen
+from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
+from keep_awake import AwakeSession
+from keep_awake_tui import KeepAwakeScreen
 from cleanup_selection import cleanup_groups, selection_plan
 from system_steward import GROUPS, GROUP_ICONS, Entry, Scan, audit_entries, children, clean, entry_icon, pretty_path, report, size_label
 
@@ -416,7 +417,7 @@ class SystemStewardApp(App):
                 Binding("/", "search", "Search"), Binding("r", "rescan", "Rescan"),
                 Binding("s", "sort", "Sort"), Binding("backspace", "back", "Back"),
                 Binding("c", "chrome", "Chrome"), Binding("a", "adobe", "Adobe"),
-                Binding("m", "maintenance", "System tools"), Binding("d", "dashboard", "Dashboard"),
+                Binding("m", "maintenance", "System tools"), Binding("k", "keep_awake", "Keep awake"), Binding("d", "dashboard", "Dashboard"),
                 Binding("e", "export", "Export"), Binding("?", "help", "Help")]
 
     def __init__(self, root=None, timeout=120, home=None):
@@ -436,6 +437,7 @@ class SystemStewardApp(App):
         self.dashboard_sampling = False
         self.dashboard_sampler = SystemSampler()
         self.dashboard_sample = None
+        self.awake = AwakeSession()
         self.register_theme(Theme(name="system-steward", primary="#71e5bb", secondary="#96a6e8", accent="#96a6e8",
                                   foreground="#dde7ef", background="#0c1218", surface="#121c25", panel="#17232e",
                                   success="#71e5bb", warning="#edbf75", error="#f18087", dark=True))
@@ -482,10 +484,9 @@ class SystemStewardApp(App):
                                 yield DashboardCard(title, description, id=f"tool-{key}", classes="feature-card")
         with Horizontal(id="workspace"):
             with VerticalScroll(id="sidebar"):
-                yield Label("EXPLORE", classes="eyebrow")
-                yield OptionList(*(Option(f"{GROUP_ICONS[group]}  {group if group != 'All' else 'Overview'}", id=group)
-                                   for group in GROUPS), id="navigation")
-                yield Label("MAKE ROOM", classes="eyebrow")
+                yield Label("QUICK ACCESS", classes="eyebrow")
+                yield Button("◷  Keep awake", id="keep-awake")
+                yield Label("CLEANUP & MAINTENANCE", classes="eyebrow")
                 yield Button(f"{GROUP_ICONS['Browsers']}  Chrome cleanup", id="chrome")
                 yield Button(f"{GROUP_ICONS['Creative']}  Adobe caches", id="adobe")
                 yield Button("◇  System tools", id="maintenance")
@@ -495,6 +496,10 @@ class SystemStewardApp(App):
                     yield Label("Overview", id="scope-title")
                     yield Input(placeholder="Search locations…  /", id="search")
                 yield Static("Selected locations, not a full disk inventory", id="scope-path")
+                with Horizontal(id="explore-navigation"):
+                    yield Label("EXPLORE", classes="eyebrow")
+                    yield Tabs(*(Tab(f"{GROUP_ICONS[group]}  {group if group != 'All' else 'Overview'}", id=group)
+                                 for group in GROUPS), active="All", id="navigation")
                 with Horizontal(id="inspector-panes"):
                     yield DataTable(id="files", cursor_type="row", zebra_stripes=True, show_row_labels=False)
                     with VerticalScroll(id="details"):
@@ -522,6 +527,7 @@ class SystemStewardApp(App):
         table.focus()
         self.resize_layout(self.size.width, self.size.height)
         self.set_interval(5, self.refresh_dashboard)
+        self.set_interval(1, self.refresh_awake_indicator)
         self.refresh_dashboard()
 
     def configure_columns(self):
@@ -556,6 +562,9 @@ class SystemStewardApp(App):
     def refresh_storage(self):
         if self.root and not self.root.is_dir():
             self.root, self.group, self.stack = None, "All", []
+        navigation = self.query_one("#navigation", Tabs)
+        with navigation.prevent(Tabs.TabActivated):
+            navigation.active = self.group
         self.run_worker(self.load_scan(), exclusive=True, group="scan")
 
     async def load_scan(self):
@@ -652,10 +661,11 @@ class SystemStewardApp(App):
             self.query_one("#search", Input).value = ""
             self.refresh_storage()
 
-    @on(OptionList.OptionSelected, "#navigation")
+    @on(Tabs.TabActivated, "#navigation")
     def navigate(self, event):
-        self.group = event.option.id
-        self.query_one("#files", DataTable).focus()
+        if self.group == event.tab.id:
+            return
+        self.group = event.tab.id
         self.snapshot = None
         self.tick()
 
@@ -765,6 +775,9 @@ class SystemStewardApp(App):
         self.open_system_tool(event.button.id.removeprefix("tool-"))
 
     def open_system_tool(self, kind):
+        if kind == "awake":
+            self.push_screen(KeepAwakeScreen(self.awake, self.root))
+            return
         screen = MaintenanceScreen(self.home, self.root, self.timeout, initial_kind=kind)
         self.push_screen(screen)
 
@@ -772,17 +785,28 @@ class SystemStewardApp(App):
     def action_maintenance(self):
         self.open_system_tool("status")
 
+    @on(Button.Pressed, "#keep-awake")
+    def action_keep_awake(self):
+        self.open_system_tool("awake")
+
+    def refresh_awake_indicator(self):
+        if not self.screen_stack:
+            return
+        for button in self.screen_stack[0].query("#keep-awake"):
+            button.label = "◷  Keep awake · on" if self.awake.running else "◷  Keep awake"
+            button.tooltip = self.awake.status()
+
     def action_help(self):
         self.push_screen(InfoDialog(f"{APP_NAME} {VERSION} · by {AUTHOR}",
             "Tab / Shift-Tab   Move between panes and controls\n↑ / ↓             Move within a list\nEnter             Explore the highlighted folder\nBackspace         Return to the previous folder\n/                 Search locations\ns                 Sort by size or name\nr                 Rescan\ne                 Export JSON\nc / a             Chrome / Adobe cleanup\nq                 Quit or return from cleanup\n\n"
-            "m                 Native system health & maintenance tools\nd                 Expand or collapse the system dashboard\n\n"
+            "m                 Native system health & maintenance tools\nk                 Keep Awake (macOS caffeinate)\nd                 Expand or collapse the system dashboard\n\n"
             "CONFIRMATION\nReview the selected targets or tasks, then click the action button or press Y. Esc or N cancels. Enter activates the focused button; Cancel is focused by default.\n\n"
             "CLEANUP\nSpace toggles a group. Ctrl-A selects all; Ctrl-D selects none.\nChrome and Adobe cleanup permanently clear the selected contents. System tools move selected targets to Trash.\n\n"
             "Mouse support: click categories, rows, checkboxes and buttons; scroll lists and panels.\n\n"
             "Measurements cover selected locations, not the entire disk. Missing, unreadable, timed-out and partial results are labeled. Cleanup estimates may differ from actual disk space reclaimed."))
 
     def check_action(self, action, parameters):
-        if len(self.screen_stack) > 1 and action in ("search", "rescan", "sort", "back", "chrome", "adobe", "maintenance", "dashboard", "export", "help"):
+        if len(self.screen_stack) > 1 and action in ("search", "rescan", "sort", "back", "chrome", "adobe", "maintenance", "keep_awake", "dashboard", "export", "help"):
             return False
         if isinstance(self.screen, ModalScreen) and action == "quit":
             return False
@@ -798,8 +822,18 @@ class SystemStewardApp(App):
             return
         if isinstance(screen, ModalScreen):
             return
+        if self.awake.running and self.awake.plan.mode == "command":
+            self.push_screen(MaintenanceConfirm("Quit and stop the running command?",
+                "Quitting stops Keep Awake and terminates its wrapped command and process group.", "Quit and stop"),
+                lambda approved: self.run_worker(self.finish_quit()) if approved else None)
+            return
+        await self.finish_quit()
+
+    async def finish_quit(self):
+        await asyncio.to_thread(self.awake.stop)
         await self.pause_scan()
         self.exit()
 
     async def on_unmount(self):
+        await asyncio.to_thread(self.awake.stop)
         await self.pause_scan()

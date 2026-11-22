@@ -15,9 +15,11 @@ Screen { background: #0c1218; color: #dde7ef; }
 #disk-bar Bar { width: 100%; }
 #workspace { height: 1fr; margin: 0 2 1 2; }
 #sidebar { width: 25; padding: 1 1 0 0; }
-#navigation { height: 10; border: none; background: transparent; padding: 0; margin-bottom: 1; }
-#navigation > .option-list--option { padding: 0 1; }
-#navigation > .option-list--option-highlighted { background: #223e3d; color: #71e5bb; text-style: bold; }
+#explore-navigation { height: 2; padding: 0 1; }
+#explore-navigation .eyebrow { width: 9; margin: 0; }
+#navigation { width: 1fr; height: 2; background: transparent; }
+#navigation Tab { color: #8395a5; }
+#navigation Tab.-active { background: #223e3d; color: #71e5bb; text-style: bold; }
 #sidebar Button { width: 100%; margin-bottom: 1; }
 #sidebar-note { color: #647787; margin: 1; height: auto; }
 .panel { border: round #293b4a; background: #121c25; }
@@ -58,6 +60,8 @@ Footer { background: #121c25; color: #8395a5; }
 .narrow #workspace { margin: 0 1 1 1; }
 .narrow .metric-caption { display: none; }
 .narrow #search { width: 27; }
+.narrow #scope-path { margin-bottom: 0; }
+.narrow #selected-path { height: 1; }
 .tiny #workspace, .tiny #metrics { display: none; }
 .tiny #too-small { display: block; }
 .page-title { height: 2; text-style: bold; color: #e1edf5; }
@@ -174,3 +178,14 @@ ModalScreen { background: #05090db3; align: center middle; }
 
 .confirmation-hint { height: auto; color: #8395a5; margin-bottom: 1; }
 .short .confirmation-hint { margin-bottom: 0; }
+
+/* Keep Awake settings scroll independently in smaller terminals. */
+#awake-workspace { padding: 1 2; }
+#awake-workspace Label, #awake-workspace Static { height: auto; }
+#awake-workspace .eyebrow { margin-top: 1; }
+#awake-workspace Checkbox { height: 3; width: 100%; }
+.awake-copy { color: #8395a5; margin-bottom: 1; }
+#awake-status { color: #71e5bb; margin: 1 0; }
+#awake-actions { height: 3; margin: 1 0; }
+#awake-actions Button { width: auto; margin-right: 1; }
+#awake-output { color: #b7c8d6; }
