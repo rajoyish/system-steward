@@ -235,6 +235,34 @@ class NativeUITests(unittest.IsolatedAsyncioTestCase):
                     await self.wait_for(pilot, lambda: app.root == home / "project")
                     self.assertNotIsInstance(app.screen, MaintenanceScreen)
 
+    def test_macos_only_tools_are_not_offered_on_windows(self):
+        windows = {key for _, key in maintenance.features("win32")}
+        mac = {key for _, key in maintenance.features("darwin")}
+        self.assertTrue(maintenance.MACOS_ONLY_FEATURES <= mac)
+        self.assertFalse(maintenance.MACOS_ONLY_FEATURES & windows)
+        self.assertEqual(mac - windows, maintenance.MACOS_ONLY_FEATURES)
+        from dashboard import tools
+        for platform in ("win32", "darwin"):
+            cards = {key for key, *_ in tools(platform)}
+            with self.subTest(platform=platform):
+                self.assertEqual(len(cards), 6)  # two rows of three
+                offered = {key for _, key in maintenance.features(platform)}
+                self.assertTrue(cards <= offered | {"status", "awake"})
+
+    def test_cleanup_wording_matches_the_platform(self):
+        from strings import for_platform
+        windows, mac = for_platform("win32"), for_platform("darwin")
+        self.assertEqual(windows.trash_title, "Recycle Bin")
+        self.assertEqual(mac.trash_title, "Trash")
+        self.assertNotIn("⌘", windows.quit_app)
+        self.assertIn(".msi", windows.installer_types)
+        self.assertIn(".dmg", mac.installer_types)
+        for field in ("trash", "empty_trash", "clean_note", "admin_prompt", "keep_awake_intro", "sampled_from"):
+            with self.subTest(field=field):
+                self.assertNotIn("macOS", getattr(windows, field))
+                self.assertNotIn("Windows", getattr(mac, field))
+
+    @unittest.skipUnless(sys.platform == "darwin", "Touch ID is a macOS-only tool")
     async def test_touchid_native_confirmation_and_no_configuration_on_open(self):
         import hashlib
         with tempfile.TemporaryDirectory() as folder:

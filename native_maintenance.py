@@ -1,4 +1,4 @@
-"""Native macOS and Windows maintenance discovery and presentation."""
+"""Native Windows and macOS maintenance discovery and presentation."""
 from dataclasses import dataclass
 import errno
 import json
@@ -9,15 +9,27 @@ import subprocess
 import sys
 import uuid
 
+from strings import TEXT
 from system_steward import size_label
 
-FEATURES = (
+ALL_FEATURES = (
     ("System Status", "status"), ("Clean System", "clean"),
     ("Optimize System", "optimize"), ("Purge Dev Artifacts", "purge"),
     ("Clean Installers", "installer"), ("Uninstall App", "uninstall"),
     ("Touch ID for Sudo", "touchid"),
-    ("Keep Awake (macOS)", "awake"),
+    ("Keep Awake", "awake"),
 )
+# Uninstall App reads macOS .app bundles and Touch ID edits macOS PAM; neither exists on Windows.
+MACOS_ONLY_FEATURES = frozenset({"uninstall", "touchid"})
+
+
+def features(platform=None):
+    """Tools offered on ``platform`` (default: this host)."""
+    windows = (platform or sys.platform) == "win32"
+    return tuple(item for item in ALL_FEATURES if not (windows and item[1] in MACOS_ONLY_FEATURES))
+
+
+FEATURES = features()
 ARTIFACTS = {"node_modules", ".next", ".nuxt", ".venv", "venv", "target", "dist", "build"}
 MANIFESTS = {"package.json", "Cargo.toml", "pyproject.toml", "requirements.txt", "go.mod", "composer.json", "pom.xml", "build.gradle"}
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07]*(?:\x07|\x1b\\)")
@@ -82,7 +94,7 @@ def discover(kind, home=None, project_root=None, cancel=None):
                 continue
             seen_roots.add(root)
             for path in items(root):
-                add(f"{label} · {path.name}", [path], "Move this cache or log folder to Trash. Quit the related app first; caches rebuild on next launch.")
+                add(f"{label} · {path.name}", [path], f"Move this cache or log folder to {TEXT.trash}. Quit the related app first; caches rebuild on next launch.")
     elif kind in ("installer", "purge"):
         roots = [home / name for name in ("Downloads", "Desktop", "Documents")] if kind == "installer" else [Path(project_root or home / "sites").expanduser().absolute()]
         for root in roots:
@@ -103,14 +115,14 @@ def discover(kind, home=None, project_root=None, cancel=None):
                     for name in list(dirs):
                         if name in ARTIFACTS and (project or name in {"node_modules", ".next", ".nuxt", ".venv"}):
                             path = parent / name
-                            add(str(path.relative_to(root)), [path], "Move generated dependencies or build output to Trash. Stop builds and dev servers first; reinstall dependencies or rebuild afterward.")
+                            add(str(path.relative_to(root)), [path], f"Move generated dependencies or build output to {TEXT.trash}. Stop builds and dev servers first; reinstall dependencies or rebuild afterward.")
                             dirs.remove(name)
                 else:
                     # Do not descend into applications, projects' dependency stores, or hidden data.
                     dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ARTIFACTS and not d.endswith(".app")]
                     for name in sorted(files):
                         if Path(name).suffix.lower() in {".dmg", ".pkg", ".iso", ".exe", ".msi"}:
-                            add(name, [parent / name], "Move this downloaded installer to Trash. Installed applications are kept.")
+                            add(name, [parent / name], f"Move this downloaded installer to {TEXT.trash}. Installed applications are kept.")
     elif kind == "uninstall":
         roots = [home / "Applications"]
         if home == Path.home().resolve():

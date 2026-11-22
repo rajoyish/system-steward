@@ -203,14 +203,42 @@ class NativeActionTests(unittest.IsolatedAsyncioTestCase):
                 await system_actions.run_action(unknown)
             runner.assert_not_awaited()
             with patch('system_actions.Path.is_file', return_value=True):
-                await system_actions.run_action(system_actions.ACTIONS[0], platform='darwin')
+                await system_actions.run_action(system_actions.MAC_ACTIONS[0], platform='darwin')
             argv = runner.await_args.args[0]
             self.assertEqual(argv[0], '/usr/bin/osascript')
             self.assertIn('/usr/bin/dscacheutil', argv[-1])
             self.assertIn('«class badm»:true', argv[-1])
-            # Windows runs its own reviewed command for the same task, never the macOS script.
-            await system_actions.run_action(system_actions.ACTIONS[0], platform='win32')
-            self.assertEqual(runner.await_args.args[0], list(system_actions.WINDOWS_COMMANDS['dns']))
+            # Each platform only accepts its own reviewed actions.
+            with self.assertRaises(ValueError):
+                await system_actions.run_action(system_actions.MAC_ACTIONS[0], platform='win32')
+            # Windows runs exactly the command shown in review; admin tasks go through a UAC prompt.
+            dns, search = system_actions.WINDOWS_ACTIONS[0], system_actions.WINDOWS_ACTIONS[3]
+            await system_actions.run_action(dns, platform='win32')
+            self.assertEqual(runner.await_args.args[0], ['ipconfig.exe', '/flushdns'])
+            await system_actions.run_action(search, platform='win32')
+            elevated = runner.await_args.args[0]
+            self.assertEqual(elevated[0], 'pwsh.exe')
+            self.assertIn("-Verb RunAs", elevated[-1])
+            self.assertIn("'Restart-Service WSearch -Force'", elevated[-1])
+
+    def test_windows_elevation_quotes_every_argument_literally(self):
+        script = system_actions.windows_elevated_argv(("tool.exe", "it's", "$(bad)"))[-1]
+        self.assertIn("-FilePath 'tool.exe'", script)
+        self.assertIn("'it''s', '$(bad)'", script)
+        self.assertTrue(system_actions.windows_elevated_argv(("tool.exe",))[-1].count("@()"))
+
+    def test_every_platform_action_has_its_own_commands_and_wording(self):
+        for platform, actions in (("win32", system_actions.WINDOWS_ACTIONS), ("darwin", system_actions.MAC_ACTIONS)):
+            self.assertIs(system_actions.actions_for(platform), actions)
+            for action in actions:
+                details = system_actions.action_details(action)
+                with self.subTest(platform=platform, action=action.key):
+                    self.assertTrue(action.commands)
+                    for argv in action.commands:
+                        self.assertIn(argv[0], details)  # review shows what really runs
+        windows_text = " ".join(system_actions.action_details(a) for a in system_actions.WINDOWS_ACTIONS)
+        for mac_term in ("Spotlight", "Quick Look", "Launch Services", "/usr/bin", "mDNSResponder"):
+            self.assertNotIn(mac_term, windows_text)
 
     async def test_touchid_refuses_changed_preview_and_verifies_after_native_write(self):
         sudo = b'auth include sudo_local\n'

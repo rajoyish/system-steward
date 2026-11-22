@@ -1,4 +1,4 @@
-"""Reviewed native macOS maintenance actions and conservative Touch ID setup."""
+"""Reviewed native maintenance actions (Windows and macOS) and conservative macOS Touch ID setup."""
 import asyncio
 import base64
 from dataclasses import dataclass
@@ -23,7 +23,7 @@ class Action:
     administrator: bool = False
 
 
-ACTIONS = (
+MAC_ACTIONS = (
     Action("dns", "Refresh DNS and directory caches", "Flush directory-service caches and ask mDNSResponder to reload. Use for name-resolution problems; lookups may briefly slow while caches rebuild.",
            (("/usr/bin/dscacheutil", "-flushcache"), ("/usr/bin/killall", "-HUP", "mDNSResponder")), True),
     Action("quicklook", "Refresh Quick Look cache", "Reset cached file previews and reload Quick Look generators. Previews rebuild when next used.",
@@ -34,6 +34,25 @@ ACTIONS = (
     Action("spotlight", "Rebuild startup-disk Spotlight index", "Erase and rebuild the startup disk's search index. Search results may be incomplete and CPU/disk activity may increase while indexing runs. Completion here means the rebuild was requested, not that indexing finished.",
            (("/usr/bin/mdutil", "-E", "/"),), True),
 )
+
+# Windows equivalents. These are what actually runs on Windows, so the review screen shows them.
+WINDOWS_ACTIONS = (
+    Action("dns", "Flush DNS resolver cache", "Clear cached name lookups. Use for name-resolution problems; lookups may briefly slow while the cache refills.",
+           (("ipconfig.exe", "/flushdns"),)),
+    Action("iconcache", "Refresh icon cache", "Ask Windows to rebuild its icon cache so stale or wrong icons refresh. Explorer may redraw briefly.",
+           (("ie4uinit.exe", "-show"),)),
+    Action("store", "Repair Microsoft Store", "Run wsreset -i, which clears the Store cache and reinstalls the Store app if it is missing or broken. The Store may open when it finishes.",
+           (("wsreset.exe", "-i"),)),
+    Action("search", "Restart Windows Search indexer", "Restart the Windows Search service (WSearch). Search results may be incomplete for a moment while it resumes. Needs administrator approval.",
+           (("pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service WSearch -Force"),), True),
+)
+
+
+def actions_for(platform=None):
+    return WINDOWS_ACTIONS if (platform or sys.platform) == "win32" else MAC_ACTIONS
+
+
+ACTIONS = actions_for()
 
 
 def action_details(action):
@@ -68,7 +87,7 @@ async def run_process(argv, output=None, timeout=180):
         code = await asyncio.wait_for(collect(), timeout)
         result = "\n".join(lines)
         if code:
-            if "(-128)" in result or "User canceled" in result:
+            if "(-128)" in result or "User canceled" in result or "canceled by the user" in result:
                 raise RuntimeError("Administrator authorization was canceled. No further actions were started.")
             raise RuntimeError(f"Command exited with status {code}: {result[-3000:]}")
         return result
@@ -117,23 +136,38 @@ def administrator_argv(script):
     return ("/usr/bin/osascript", "-e", source)
 
 
-WINDOWS_COMMANDS = {
-    "dns": ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Clear-DnsClientCache"),
-    "quicklook": ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "ie4uinit.exe -show"),
-    "launchservices": ("wsreset.exe", "-i"),
-    "spotlight": ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service WSearch -Force -ErrorAction SilentlyContinue"),
-}
+def powershell_literal(text):
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def windows_elevated_argv(argv):
+    """Run fixed ``argv`` through a UAC prompt and propagate its exit code.
+
+    Only internally defined commands reach here; each argument is a quoted PowerShell literal.
+    """
+    arguments = ", ".join(powershell_literal(part) for part in argv[1:]) or "@()"
+    script = (f"$p = Start-Process -FilePath {powershell_literal(argv[0])} -ArgumentList {arguments} "
+              "-Verb RunAs -Wait -PassThru -WindowStyle Hidden; exit $p.ExitCode")
+    return ("pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+
+
+def action_available(action, platform=None):
+    """Whether the action's programs exist here (absolute macOS paths, or Windows programs on PATH)."""
+    if (platform or sys.platform) == "win32":
+        return all(shutil.which(argv[0]) for argv in action.commands)
+    return all(Path(argv[0]).is_file() for argv in action.commands)
 
 
 async def run_action(action, output=None, platform=None):
     """Run one reviewed action. ``platform`` ("win32"/"darwin") defaults to this host."""
     platform = platform or sys.platform
-    if action not in ACTIONS:
+    if action not in actions_for(platform):
         raise ValueError("Unknown maintenance action")
     if platform == "darwin" and any(not Path(argv[0]).is_file() for argv in action.commands):
         raise OSError("This action is unavailable on this macOS version")
-    if platform == "win32" and action.key in WINDOWS_COMMANDS:
-        await run_process(list(WINDOWS_COMMANDS[action.key]), output, timeout=180)
+    if platform == "win32":
+        for argv in action.commands:
+            await run_process(list(windows_elevated_argv(argv) if action.administrator else argv), output, timeout=180)
         return
     if action.administrator:
         # Fixed executable paths and arguments from ACTIONS, quoted independently.

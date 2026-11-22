@@ -1,8 +1,7 @@
-"""Native Textual macOS resource and maintenance screens."""
+"""Native Textual resource and maintenance screens (Windows and macOS)."""
 import asyncio
 from pathlib import Path
 import subprocess
-import sys
 import threading
 
 from rich.text import Text
@@ -14,6 +13,7 @@ from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, Se
 import native_maintenance as maintenance
 from app_identity import BRAND
 import system_actions
+from strings import TEXT
 from system_status import SystemSampler
 from system_steward import Entry, Scan, size_label
 
@@ -137,11 +137,11 @@ class MaintenanceScreen(Screen):
         notes = {
             "status": "Live system health · select a metric for details. Refresh keeps the previous sample until a new one arrives.",
             "analyze": "Browse any folder by size using System Steward's native explorer.",
-            "clean": "User caches and logs only. Quit related apps first. Selected folders move to Trash; empty Trash separately to reclaim disk space.",
+            "clean": TEXT.clean_note,
             "purge": "Scan the folder above. Only generated dependencies and build output are offered. Stop dev servers and builds before removal.",
-            "installer": "Downloaded .dmg, .pkg and .iso files in Downloads, Desktop and Documents. Installed applications are kept.",
+            "installer": f"Downloaded {TEXT.installer_types} files in Downloads, Desktop and Documents. Installed applications are kept.",
             "uninstall": "Apps plus exact bundle-ID residuals. Quit the app first. Shared data and unmatched residuals are kept.",
-            "optimize": "Choose individual maintenance tasks, inspect their effects, then review and confirm. Administrator tasks use macOS’s authentication dialog.",
+            "optimize": "Choose individual maintenance tasks, inspect their effects, then review and confirm. " + TEXT.admin_prompt,
             "touchid": "Configure Touch ID in macOS’s sudo_local file. Changes preserve unrelated settings and use the standard administrator dialog.",
         }
         self.query_one("#maintenance-note", Static).update(notes[self.kind])
@@ -240,7 +240,7 @@ class MaintenanceScreen(Screen):
             elif kind == "optimize":
                 widget = self.query_one("#maintenance-list", SelectionList)
                 for index, action in enumerate(self.actions):
-                    available = True if sys.platform != "darwin" else all(Path(argv[0]).is_file() for argv in action.commands)
+                    available = system_actions.action_available(action)
                     label = action.title + (" · admin" if action.administrator else "")
                     widget.add_option((Text(label), index, False))
                     if not available:
@@ -281,7 +281,7 @@ class MaintenanceScreen(Screen):
         if selected:
             groups = [self.groups[i] for i in selected]
             amount = sum(self.measurements[p].size for group in groups for p in group.targets)
-            self.query_one("#maintenance-summary", Static).update(f"{len(selected)} selected · {size_label(amount)} measured · moves to Trash; disk space is reclaimed when Trash is emptied")
+            self.query_one("#maintenance-summary", Static).update(f"{len(selected)} selected · {size_label(amount)} measured · moves to {TEXT.trash}; {TEXT.empty_trash}")
 
     @on(SelectionList.SelectionHighlighted, "#maintenance-list")
     def highlight(self, event):
@@ -326,15 +326,15 @@ class MaintenanceScreen(Screen):
         if self.kind == "optimize":
             chosen = tuple(self.actions[i] for i in self.query_one("#maintenance-list", SelectionList).selected)
             if chosen:
-                details = "Only these tasks will run. macOS will request administrator authorization where required.\n\n" + "\n\n".join(system_actions.action_details(action) for action in chosen)
+                details = "Only these tasks will run. " + TEXT.admin_prompt + "\n\n" + "\n\n".join(system_actions.action_details(action) for action in chosen)
                 self.app.push_screen(MaintenanceConfirm("Review selected maintenance tasks", details, "Run selected tasks"),
                     lambda approved: self.run_worker(self.execute_actions(chosen), group="maintenance-action") if approved else None)
             return
         chosen = [self.groups[i] for i in self.query_one("#maintenance-list", SelectionList).selected]
         if not chosen:
             return
-        details = "Only these targets will move to Trash. Quit related apps and stop builds first. Restore from Trash if needed. Empty Trash separately to reclaim space.\n\n" + "\n\n".join(g.label + "\n" + g.effect + "\n" + "\n".join(str(p) for p in g.targets) for g in chosen)
-        self.app.push_screen(MaintenanceConfirm(f"Review {len(chosen)} selected groups", details, "Move to Trash"), lambda approved: self.run_worker(self.trash_selected(chosen), group="maintenance-action") if approved else None)
+        details = f"Only these targets will move to {TEXT.trash}. Quit related apps and stop builds first. {TEXT.restore_hint} {TEXT.empty_trash.capitalize()}.\n\n" + "\n\n".join(g.label + "\n" + g.effect + "\n" + "\n".join(str(p) for p in g.targets) for g in chosen)
+        self.app.push_screen(MaintenanceConfirm(f"Review {len(chosen)} selected groups", details, f"Move to {TEXT.trash_title}"), lambda approved: self.run_worker(self.trash_selected(chosen), group="maintenance-action") if approved else None)
 
     def confirm_touchid(self, enabled):
         if self.fetching or self.busy:
@@ -427,7 +427,7 @@ class MaintenanceScreen(Screen):
                 if self.stop_requested:
                     results.append("Stopped. Remaining groups were kept.")
                     break
-                self.query_one("#maintenance-summary", Static).update(Text("Moving to Trash: " + group.label))
+                self.query_one("#maintenance-summary", Static).update(Text(f"Moving to {TEXT.trash_title}: " + group.label))
                 try:
                     moved = []
                     if any(p.suffix == ".app" for p in group.targets):
@@ -439,7 +439,7 @@ class MaintenanceScreen(Screen):
                     results.append(f"△ {group.label}: {exc}")
                 finally:
                     results.extend(f"✓ {src}\n  → {dest}" for src, dest in moved)
-            self.query_one("#maintenance-summary", Static).update("Finished · review results below. Refresh before another cleanup. Empty Trash separately to reclaim space.")
+            self.query_one("#maintenance-summary", Static).update(f"Finished · review results below. Refresh before another cleanup. {TEXT.empty_trash.capitalize()}.")
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             results.append(str(exc))
             self.query_one("#maintenance-summary", Static).update("△ Cleanup blocked · see details")

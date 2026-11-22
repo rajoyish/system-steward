@@ -46,14 +46,15 @@ if (Test-Path -LiteralPath $VenvPython) {
 
 $MainScript = Join-Path $ProjectDir "system_steward.py"
 $ForwardArgs = @()
-if ($Awake -or $KeepAwake) {
-    $ForwardArgs += "--keep-awake"
-    if ($Display) { $ForwardArgs += "--display" }
-    if ($Duration -gt 0) { $ForwardArgs += @("-t", "$Duration") }
-} elseif ($Stop) {
+# -Stop / -Status win over -Awake so "-Awake -Stop" stops (as documented) instead of starting.
+if ($Stop) {
     $ForwardArgs += "--stop-awake"
 } elseif ($Status) {
     $ForwardArgs += "--status-awake"
+} elseif ($Awake -or $KeepAwake) {
+    $ForwardArgs += "--keep-awake"
+    if ($Display) { $ForwardArgs += "--display" }
+    if ($Duration -gt 0) { $ForwardArgs += @("-t", "$Duration") }
 }
 if ($ScriptArgs) {
     $ForwardArgs += $ScriptArgs

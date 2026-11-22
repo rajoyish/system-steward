@@ -16,12 +16,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 
 GROUPS = ["All", "Browsers", "Creative", "Developer", "Projects", "Desktop", "Apps"]
-GROUP_ICONS = {"All": "◉", "Browsers": "◎", "Creative": "✦", "Developer": "⌘",
+# ⌘ is the macOS Command key; Windows users get a neutral code glyph instead.
+CODE_ICON = "λ" if sys.platform == "win32" else "⌘"
+GROUP_ICONS = {"All": "◉", "Browsers": "◎", "Creative": "✦", "Developer": CODE_ICON,
                "Projects": "▣", "Desktop": "▤", "Apps": "◇", "Folder contents": "▣"}
 STATUS_ICONS = {"queued": "·", "scanning": "◐", "done": "✓", "partial": "△",
                 "missing": "−", "unreadable": "△", "timed out": "◷", "cancelled": "×"}
 FILE_ICONS = {
-    **dict.fromkeys((".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".zsh", ".php", ".html", ".css", ".ps1", ".bat", ".cmd"), "⌘"),
+    **dict.fromkeys((".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".zsh", ".php", ".html", ".css", ".ps1", ".bat", ".cmd"), CODE_ICON),
     **dict.fromkeys((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic"), "▧"),
     **dict.fromkeys((".mp4", ".mov", ".mkv", ".webm"), "▷"),
     **dict.fromkeys((".mp3", ".wav", ".m4a", ".flac", ".aac"), "♫"),

@@ -71,14 +71,15 @@ Without a folder argument, the app audits common Chrome, Adobe, developer, proje
 
 ## What you can do
 
-- **Explore storage:** browse folders by size, filter paths, inspect details, and export measurements as JSON. Uses fast native `os.scandir` recursive sizing on Windows (scans multi-gigabyte folders in ~1s) and `du` on macOS.
-- **Monitor your system:** view live CPU load, physical RAM usage, drive volumes, network rates, battery status, top processes, hardware model, and uptime. Uses native Win32 APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetSystemPowerStatus`, `GetTickCount64`) via `ctypes` on Windows, and Mach APIs on macOS.
-- **Review cleanup:** inspect Chrome and Adobe caches, user caches and logs, generated developer artifacts (`node_modules`, `.venv`, `target`, `dist`, `build`), and downloaded installers (`.exe`, `.msi`, `.iso`, `.dmg`, `.pkg`).
-- **Remove applications:** review installed programs and user data matched to their application identities.
+- **Explore storage:** browse folders by size, filter paths, inspect details, and export measurements as JSON. Windows measures in-process with `os.scandir` (the full audit takes a couple of seconds); macOS uses `du`.
+- **Monitor your system:** view live CPU load, physical RAM usage, drive volumes, network rates, battery status, top processes, hardware model, and uptime. Windows readings come from Win32 APIs via `ctypes` with no helper processes; macOS uses Mach APIs and bundled tools.
+- **Review cleanup:** inspect Chrome and Adobe caches, temporary files, user caches and logs, generated developer artifacts (`node_modules`, `.venv`, `target`, `dist`, `build`), and downloaded installers (`.exe`, `.msi`, `.iso` on Windows; `.dmg`, `.pkg`, `.iso` on macOS).
+- **Remove applications (macOS):** review `.app` bundles and user data matched to their bundle identifiers. Not offered on Windows.
 - **Run maintenance:**
-  - **Windows:** flush DNS cache (`Clear-DnsClientCache`), reset thumbnail and icon cache database (`thumbcache`), reset Windows Store registration (`wsreset.exe -i`), and restart/rebuild Windows Search indexer (`WSearch`).
+  - **Windows:** flush the DNS resolver cache (`ipconfig /flushdns`), refresh the icon cache (`ie4uinit.exe -show`), repair the Microsoft Store (`wsreset.exe -i`), and restart the Windows Search indexer (`WSearch`, after a UAC prompt).
   - **macOS:** flush DNS (`dscacheutil`), reset Quick Look (`qlmanage`), refresh LaunchServices (`lsregister`), and reindex Spotlight (`mdutil`).
-- **Keep Awake:** temporarily prevent idle, display, or disk sleep with a timer, a watched PID, or a wrapped command. Uses Win32 `SetThreadExecutionState` on Windows (`windows_caffeinate.py`) and `/usr/bin/caffeinate` on macOS. System power and sleep settings stay unchanged.
+- **Keep Awake:** temporarily prevent idle or display sleep (and disk idle sleep on macOS) with a timer, a watched PID, or a wrapped command. Uses Win32 `SetThreadExecutionState` on Windows (`windows_caffeinate.py`) and `/usr/bin/caffeinate` on macOS. System power and sleep settings stay unchanged.
+- **Touch ID for sudo (macOS):** enable or disable fingerprint authentication for `sudo`. Not offered on Windows.
 
 Scans run in the background. The dashboard includes disk usage cards and an expandable system section with live readings and tool previews. Opening a tool or preview does not apply changes.
 
@@ -101,7 +102,7 @@ The **Explore** category tabs sit above the storage table. Click a category or f
 | c | Preview Chrome cleanup |
 | a | Preview Adobe cleanup; g opens its purge guide |
 | m | Open system tools |
-| k | Open Keep Awake (macOS caffeinate) |
+| k | Open Keep Awake |
 | d | Expand or collapse live dashboard readings and tools |
 | ? | Show help |
 | Esc | Dismiss a dialog or leave cleanup |
@@ -111,14 +112,19 @@ In cleanup lists, **Space** toggles a group, **Ctrl-A** selects all, **Ctrl-D** 
 
 ## Cleanup behavior
 
-### Files moved to Trash
+### Files moved to the Recycle Bin / Trash
 
-Clean System, Purge Dev Artifacts, Clean Installers, and Uninstall App move selected targets to `~/.Trash` with unique names. Existing Trash items are preserved. **Space is reclaimed only after you empty Trash separately.** Restore moved items from Trash if needed.
+Clean System, Purge Dev Artifacts, Clean Installers, and (on macOS) Uninstall App move selected targets out of the way instead of deleting them:
 
-- Clean System covers user caches and logs in `~/Library/Caches`, `~/Library/Logs`, and `~/.cache`. Close related apps first.
+- **Windows:** to the **Recycle Bin**, restorable from Explorer. Only local fixed drives are accepted; targets on network or removable drives (which have no Recycle Bin) are refused rather than permanently deleted.
+- **macOS:** to `~/.Trash` with unique names. Existing Trash items are preserved. A target on another volume is refused with a message to use that volume's Trash.
+
+**Space is reclaimed only after you empty the Recycle Bin / Trash separately.**
+
+- Clean System covers `%LOCALAPPDATA%\Temp`, `%LOCALAPPDATA%\CrashDumps` and `~/.cache` on Windows, and user caches and logs in `~/Library/Caches`, `~/Library/Logs`, and `~/.cache` on macOS. Close related apps first.
 - Developer scans skip `.git`, symlinks, and already discovered artifact trees. Common dependency directories are recognized directly; `build`, `dist`, `target`, and `venv` require a recognized project manifest in their parent. Review generated-looking folders because they can still contain work you need.
-- Clean Installers finds `.dmg`, `.pkg`, and `.iso` downloads in Downloads, Desktop, and Documents.
-- App removal checks `/Applications` and `~/Applications`, and user Caches, Preferences, Application Support, Saved Application State, and Logs for exact bundle-ID matches. Shared containers and unmatched residual data remain. Removal is blocked when a selected app is running or process inspection fails.
+- Clean Installers finds `.exe`, `.msi`, `.iso`, `.dmg`, and `.pkg` downloads in Downloads, Desktop, and Documents.
+- App removal (macOS only) checks `/Applications` and `~/Applications`, and user Caches, Preferences, Application Support, Saved Application State, and Logs for exact bundle-ID matches. Shared containers and unmatched residual data remain. Removal is blocked when a selected app is running or process inspection fails.
 
 The app refuses targets replaced or redirected after preview and skips symlinked targets and redirected scan roots. Results show each source, destination, and any partial failures. **Stop after item** leaves subsequent groups untouched and lets the current move finish.
 
@@ -128,7 +134,7 @@ Press **c**. The default **Browser caches only** scope excludes cookies and webs
 
 **Save your work and quit Chrome and its helpers before confirming. Website-data cleanup signs you out and permanently deletes selected unsynced website data and offline content. There is no undo.** The app checks for running Chrome processes before and during cleanup and stops if Chrome relaunches.
 
-Cleanup covers standard macOS Chrome profiles and Chrome's separate macOS cache tree. Bookmarks, browsing history, saved password databases, installed extensions, profile preferences, downloaded files outside site storage, and extension-specific `Storage/ext` data are excluded. Other Chrome channels, custom profile roots, and other browsers are outside this action's scope. Selected contents are permanently cleared rather than moved to Trash.
+Cleanup covers standard Chrome profiles (`%LOCALAPPDATA%\Google\Chrome\User Data` on Windows, `~/Library/Application Support/Google/Chrome` on macOS) and Chrome's separate macOS cache tree. Bookmarks, browsing history, saved password databases, installed extensions, profile preferences, downloaded files outside site storage, and extension-specific `Storage/ext` data are excluded. Other Chrome channels, custom profile roots, and other browsers are outside this action's scope. Selected contents are permanently cleared rather than moved to Trash.
 
 ### Adobe cleanup
 
@@ -163,7 +169,7 @@ Press **k**, click **Keep awake** in the sidebar, or choose **Keep Awake** from 
 - **Windows:** Uses the Win32 `SetThreadExecutionState` API (`windows_caffeinate.py`).
 - **macOS:** Uses the built-in `/usr/bin/caffeinate`.
 
-Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d`), **Disk idle sleep** (`-m`), or a combination. Then choose how the session ends:
+Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d`), **Disk idle sleep** (`-m`, macOS only; Windows has no equivalent request, so the option is hidden there), or a combination. Then choose how the session ends:
 
 - **When stopped / timer ends:** leave the timer blank to run until stopped, or enter seconds such as `3600` for an hour.
 - **When an existing PID exits:** enter a running process ID. An optional timer ends the session earlier. Stopping Keep Awake leaves the watched process running.
@@ -194,6 +200,15 @@ pwsh -File .\system-steward.ps1 -Awake
 pwsh -File .\system-steward.ps1 -Awake -Stop
 pwsh -File .\system-steward.ps1 -Awake -Status
 ```
+```zsh
+# macOS (and the same flags on Windows via system_steward.py)
+./system-steward --keep-awake              # start in background (alias: -k, --awake)
+./system-steward --keep-awake --display -t 3600
+./system-steward --status-awake
+./system-steward --stop-awake
+```
+
+Background sessions started from the TUI or the command line are the same session: either can show or stop it. Set `SYSTEM_STEWARD_STATE_DIR` to keep the session record somewhere other than `~/.system-steward`.
 
 Choose **Review & start** and inspect the exact command before confirming. Only one app-managed session runs at a time. You can return to storage browsing while it runs; the sidebar shows when Keep Awake is active. Reopen the tool to see its PID, remaining time, and output, or choose **Stop session**.
 
@@ -203,11 +218,11 @@ Stopping a wrapped-command session or quitting the app during command execution 
 
 Maintenance tasks show the exact commands and effects before confirmation. Only selected tasks run. A failure stops subsequent tasks. **Stop after item** waits for the current task to finish. These actions are troubleshooting tools; they do not guarantee faster performance.
 
-- **Windows:** Uses PowerShell 7 and standard Windows management tools (`Clear-DnsClientCache`, thumbnail database rebuilds, `wsreset.exe -i`, and `WSearch` service restart).
+- **Windows:** Runs the built-in tools shown in the review (`ipconfig /flushdns`, `ie4uinit.exe -show`, `wsreset.exe -i`, and a `WSearch` service restart). Tasks that need administrator rights run through a Windows User Account Control prompt; cancelling the prompt stops the remaining tasks.
 - **macOS:** Administrator actions use the standard macOS authorization dialog after the app's own confirmation. Touch ID changes use `/etc/pam.d/sudo_local` on macOS Sonoma and later.
 
 System readings use native platform APIs with no third-party background daemon required:
-- **Windows:** Win32 API calls via `ctypes` (`GetSystemTimes` for CPU load, `GlobalMemoryStatusEx` for RAM, volume metrics for drives, `GetSystemPowerStatus` for battery, and `GetTickCount64` for uptime).
+- **Windows:** Win32 API calls via `ctypes`: `GetSystemTimes` (CPU), `GlobalMemoryStatusEx` (RAM), drive metrics, `GetSystemPowerStatus` (battery), `GetTickCount64` (uptime), a Toolhelp process snapshot with per-process CPU time (top processes, as a share of total CPU since the previous sample), and `GetIfTable2` (per-adapter network rates). Processes owned by other users or elevated processes may be absent from the top list.
 - **macOS:** Public Mach APIs and bundled tools.
 
 The resource score is an app-defined estimate, not a hardware diagnostic. It starts at 100 and subtracts points for CPU, RAM, and system-disk usage thresholds; details show the formula. A missing required reading makes the estimate unavailable.
@@ -234,4 +249,18 @@ Run tests on macOS:
 .venv/bin/python -m unittest -v
 ```
 
-Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse interaction, resizing, cleanup selection and confirmation, running-app blocking, maintenance, Keep Awake sessions, and system readings. Cleanup tests use temporary fake profiles and folders instead of real Chrome or Adobe data.
+Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse interaction, resizing, cleanup selection and confirmation, running-app blocking, maintenance, Keep Awake sessions, and system readings. Cleanup tests use temporary fake profiles and folders instead of real Chrome or Adobe data, and Keep Awake tests use a throwaway state folder, so a test run never touches your real session.
+
+### Project layout
+
+| Path | Role |
+| --- | --- |
+| `system_steward.py` | CLI entry point, audit locations, scanner |
+| `tui/` | Textual app (`app.py`), cleanup screen, dialogs; `system_steward_tui.py` re-exports them |
+| `maintenance_tui.py`, `keep_awake_tui.py`, `dashboard.py` | Tool screens and dashboard cards |
+| `native_maintenance.py`, `system_actions.py` | Cleanup discovery, Recycle Bin / Trash moves, reviewed maintenance actions |
+| `chrome_cleanup.py`, `adobe_cleanup.py`, `cleanup_selection.py` | Browser and Adobe cache cleanup |
+| `system_status.py` | Live readings and the resource estimate |
+| `keep_awake.py`, `awake_state.py`, `windows_caffeinate.py` | Keep Awake sessions, the verified session record, the Windows helper |
+| `platforms/` | Every OS call: `windows.py` (Win32 via `ctypes`) and `darwin.py` |
+| `strings.py` | Wording that differs between Windows and macOS |

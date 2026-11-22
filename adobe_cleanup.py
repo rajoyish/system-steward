@@ -21,6 +21,17 @@ ADOBE_PROCESS = re.compile(
     r"Illustrator[^/\\]*|InDesign[^/\\]*|After Effects[^/\\]*|Premiere[^/\\]*|Audition[^/\\]*|"
     r"Media Encoder[^/\\]*|Bridge|CCXProcess|Core ?Sync|CCLibrary)(?:[/\\]|\.exe|$)", re.I)
 
+if sys.platform == "win32":
+    QUIT_LINES = ("Exit with File > Exit, then relaunch before resuming work.",
+                  "Save work and exit every Adobe app (File > Exit).",
+                  "Quit Creative Cloud from its system-tray icon menu too.",
+                  "Confirm in Task Manager that Adobe apps are closed.")
+else:
+    QUIT_LINES = ("Quit with Command-Q, then relaunch before resuming work.",
+                  "Save work and quit every Adobe app with Command-Q.",
+                  "Quit Creative Cloud from its menu-bar account menu too.",
+                  "Confirm in Activity Monitor that Adobe apps are closed.")
+
 # Short lines keep the in-app guide readable in a 68-column terminal.
 PURGE_GUIDE = (
     "SAFEST FIRST: PURGE INSIDE THE APP",
@@ -32,16 +43,14 @@ PURGE_GUIDE = (
     "Lightroom Classic: Settings > Performance > Purge Cache",
     "under Camera Raw Cache Settings. Labels vary by version.",
     "Verify the cache size resets or the purge finishes cleanly.",
-    "Quit with Command-Q, then relaunch before resuming work.",
+    QUIT_LINES[0],
     "",
     "MANUAL CLEANUP WITH THIS APP",
-    "Save work and quit every Adobe app with Command-Q.",
-    "Quit Creative Cloud from its menu-bar account menu too.",
-    "Confirm in Activity Monitor that Adobe apps are closed.",
+    *QUIT_LINES[1:],
     "Esc returns to the preview. Select the cache groups to clear.",
     "Choose Review selection, inspect the targets, then click Permanently clear or press Y.",
     "Cache parent folders stay. Presets and catalogs are protected.",
-    "Deletion is permanent; the app does not use or empty Trash.",
+    "Deletion is permanent; nothing goes to Trash / the Recycle Bin.",
     "Relaunch Adobe and verify projects reopen and caches rebuild.",
     "",
     "KEEP CACHE GROWTH UNDER CONTROL",

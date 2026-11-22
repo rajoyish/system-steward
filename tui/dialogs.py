@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label, SelectionList, Static
 
+from strings import TEXT
 from system_steward import pretty_path, size_label
 
 
@@ -93,7 +94,7 @@ class ConfirmDialog(ModalScreen[bool]):
         try:
             running = await asyncio.to_thread(self.checker)
             if running:
-                status.update(f"{self.kind} apps or helpers are still running. Quit them with ⌘Q, then retry.")
+                status.update(f"{self.kind} apps or helpers are still running. To quit each one, {TEXT.quit_app}, then retry.")
             else:
                 self.dismiss(True)
                 return

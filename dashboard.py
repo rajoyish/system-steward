@@ -1,25 +1,51 @@
 """Dashboard cards for native resource readings and maintenance shortcuts."""
+import sys
+
 from rich.text import Text
 from textual.widgets import Button
 
 from system_steward import clean
 
-TOOLS = (
-    ("clean", "Clean system", "Select app caches and logs to clear."),
-    ("purge", "Developer artifacts", "Find dependencies and build output."),
-    ("installer", "Clean installers", "Find DMG, PKG and ISO downloads."),
-    ("uninstall", "Uninstall apps", "Review apps and their leftover files."),
-    ("optimize", "System maintenance", "Repair DNS, previews, apps or search."),
-    ("touchid", "Touch ID for sudo", "Configure fingerprint access for sudo."),
-)
 
-METRICS = (
-    ("resource", "RESOURCE ESTIMATE", "CPU, RAM & disk headroom", "An app-defined resource estimate, not a hardware diagnosis. Open system status for the calculation and readings."),
-    ("cpu", "CPU LOAD", "Processor activity", "Percentage of CPU time spent working, measured between native system samples."),
-    ("memory", "MEMORY", "Active, wired & compressed", "Physical RAM used by active pages, wired pages and the compressor. Inactive cache is excluded."),
-    ("network", "NETWORK", "Download / upload rate", "Incoming and outgoing data rates on the busiest measured interface. The first reading waits for the next sample."),
-    ("power", "POWER", "Battery charge & status", "Battery percentage and charging state. Desktop Macs may have no internal battery."),
-)
+def tools(platform=None):
+    """Dashboard tool cards (six, laid out three per row) for ``platform``."""
+    if (platform or sys.platform) == "win32":
+        # Uninstall Apps and Touch ID are macOS-only; Windows gets status and Keep Awake instead.
+        return (
+            ("clean", "Clean system", "Select temporary files and caches to clear."),
+            ("purge", "Developer artifacts", "Find dependencies and build output."),
+            ("installer", "Clean installers", "Find EXE, MSI and ISO downloads."),
+            ("optimize", "System maintenance", "Flush DNS, icons, Store or Search."),
+            ("status", "System status", "Live CPU, memory, disks and processes."),
+            ("awake", "Keep awake", "Prevent sleep for a while or a task."),
+        )
+    return (
+        ("clean", "Clean system", "Select app caches and logs to clear."),
+        ("purge", "Developer artifacts", "Find dependencies and build output."),
+        ("installer", "Clean installers", "Find DMG, PKG and ISO downloads."),
+        ("uninstall", "Uninstall apps", "Review apps and their leftover files."),
+        ("optimize", "System maintenance", "Repair DNS, previews, apps or search."),
+        ("touchid", "Touch ID for sudo", "Configure fingerprint access for sudo."),
+    )
+
+
+def metrics(platform=None):
+    windows = (platform or sys.platform) == "win32"
+    memory = (("Physical RAM in use", "Physical RAM in use by processes and the system. Standby cache that Windows can reclaim is excluded.")
+              if windows else
+              ("Active, wired & compressed", "Physical RAM used by active pages, wired pages and the compressor. Inactive cache is excluded."))
+    return (
+        ("resource", "RESOURCE ESTIMATE", "CPU, RAM & disk headroom", "An app-defined resource estimate, not a hardware diagnosis. Open system status for the calculation and readings."),
+        ("cpu", "CPU LOAD", "Processor activity", "Percentage of CPU time spent working, measured between native system samples."),
+        ("memory", "MEMORY", *memory),
+        ("network", "NETWORK", "Download / upload rate", "Incoming and outgoing data rates on the busiest measured interface. The first reading waits for the next sample."),
+        ("power", "POWER", "Battery charge & status", "Battery percentage and charging state. " + (
+            "Desktop PCs may have no battery." if windows else "Desktop Macs may have no internal battery.")),
+    )
+
+
+TOOLS = tools()
+METRICS = metrics()
 
 
 class DashboardCard(Button):

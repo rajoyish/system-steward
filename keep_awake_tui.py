@@ -3,7 +3,6 @@ import asyncio
 from pathlib import Path
 import shlex
 import subprocess
-import sys
 
 from rich.text import Text
 from textual import on
@@ -15,7 +14,11 @@ from app_identity import BRAND
 from keep_awake import available, plan_session
 from maintenance_tui import MaintenanceConfirm
 from native_maintenance import ANSI
+from platforms import IS_WINDOWS
+from strings import TEXT
 from system_steward import clean
+
+DISK_SLEEP_SUPPORTED = not IS_WINDOWS
 
 
 class KeepAwakeScreen(Screen):
@@ -30,15 +33,11 @@ class KeepAwakeScreen(Screen):
     def compose(self):
         with Horizontal(classes="topbar"):
             yield Label(BRAND, classes="brand")
-            context_label = "KEEP AWAKE · Windows" if sys.platform == "win32" else "KEEP AWAKE · macOS"
-            yield Label(context_label, classes="top-context")
+            yield Label(f"KEEP AWAKE · {TEXT.os_name}", classes="top-context")
             yield Button("← Back", id="awake-back")
         with VerticalScroll(id="awake-workspace"):
             yield Label("Keep Awake", classes="page-title")
-            copy_text = ("Temporarily prevent sleep with Windows SetThreadExecutionState. Power & sleep settings stay unchanged. Sessions continue while you browse the app and stop when you quit."
-                if sys.platform == "win32" else
-                "Temporarily prevent sleep with macOS caffeinate. System Settings stay unchanged. Sessions continue while you browse the app and stop when you quit.")
-            yield Static(copy_text, classes="awake-copy")
+            yield Static(TEXT.keep_awake_intro, classes="awake-copy")
             yield Static("", id="awake-status")
             yield Label("Prevent", classes="eyebrow")
             yield Checkbox("Idle system sleep (-i)", value=True, id="awake-idle")
@@ -53,7 +52,7 @@ class KeepAwakeScreen(Screen):
             yield Label("Existing process ID", id="awake-pid-label")
             yield Input(placeholder="e.g. 12345", id="awake-pid")
             yield Label("Command and arguments", id="awake-command-label")
-            yield Input(placeholder='e.g. /usr/bin/ditto "source folder" "backup folder"', id="awake-command")
+            yield Input(placeholder=TEXT.command_example, id="awake-command")
             yield Label("Working folder for the command", id="awake-cwd-label")
             yield Input(value=str(self.root), id="awake-cwd")
             yield Static("", id="awake-mode-note", classes="awake-copy")
@@ -78,6 +77,8 @@ class KeepAwakeScreen(Screen):
                 self.query_one("#awake-pid", Input).value = plan.argv[-1]
             elif plan.mode == "command":
                 self.query_one("#awake-command", Input).value = shlex.join(plan.argv[2:])
+        # SetThreadExecutionState has no disk-idle request, so -m would silently do nothing on Windows.
+        self.query_one("#awake-disk", Checkbox).display = DISK_SLEEP_SUPPORTED
         self.configure_mode()
         self.refresh_session()
         self.set_interval(1, self.refresh_session)
@@ -100,7 +101,7 @@ class KeepAwakeScreen(Screen):
 
     def refresh_session(self):
         running = self.session.poll()
-        self.query_one("#awake-status", Static).update(Text(self.session.status() if available() else "Keep Awake is available on macOS only."))
+        self.query_one("#awake-status", Static).update(Text(self.session.status() if available() else TEXT.keep_awake_unavailable))
         self.query_one("#awake-start", Button).disabled = running or self.stopping or not available()
         self.query_one("#awake-stop", Button).disabled = not running or self.stopping
         for widget in self.query("Checkbox, Input, Select"):

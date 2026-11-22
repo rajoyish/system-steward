@@ -162,6 +162,17 @@ class LauncherTests(unittest.TestCase):
         self.assertIn("System Steward", result.stdout)
         self.assertIn("Rajesh Budhathoki", result.stdout)
 
+    @unittest.skipUnless(sys.platform == "win32", "PowerShell launcher")
+    def test_awake_status_and_stop_flags_never_start_a_session(self):
+        launcher = Path(__file__).parent.resolve() / "system-steward.ps1"
+        for flag in ("-Status", "-Stop"):
+            with self.subTest(flag=flag):
+                result = subprocess.run(["pwsh", "-NoProfile", "-File", str(launcher), "-Awake", flag],
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("No ", result.stdout)  # "No ... Keep Awake session ..." (state dir is isolated)
+                self.assertNotIn("✓", result.stdout)  # a start prints "✓ Keep Awake active ..."
+
     def test_launcher_from_another_working_directory(self):
         if sys.platform == "win32":
             launcher = Path(__file__).parent.resolve() / "system-steward.ps1"

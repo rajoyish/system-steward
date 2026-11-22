@@ -486,7 +486,8 @@ class AwakeUITests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("k")
                     await pilot.pause()
                     self.assertTrue(app.screen.query_one("#awake-start", Button).disabled)
-                    self.assertIn("macOS only", str(app.screen.query_one("#awake-status").content))
+                    from strings import TEXT
+                    self.assertIn(TEXT.keep_awake_unavailable, str(app.screen.query_one("#awake-status").content))
                     spawn.assert_not_called()
 
 

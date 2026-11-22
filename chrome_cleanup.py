@@ -8,6 +8,8 @@ import subprocess
 import sys
 import threading
 
+from strings import TEXT
+
 
 PROFILE_NAME = re.compile(r"(?:Default|Profile \d+|Guest Profile|System Profile)\Z")
 SITE_DIRS = (
@@ -168,7 +170,7 @@ class CleanupJob:
                     break
                 # Recheck during cleanup so relaunching Chrome stops further deletion.
                 if chrome_running():
-                    self.errors.append("Chrome is running. Quit Chrome (⌘Q) and try again.")
+                    self.errors.append(f"Chrome is running. Quit Chrome ({TEXT.quit_app}) and try again.")
                     break
                 self.current = str(path)
                 try:

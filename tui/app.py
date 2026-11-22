@@ -23,6 +23,7 @@ from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
 from system_status import SystemSampler
 from system_steward import GROUPS, GROUP_ICONS, Scan, audit_entries, children, clean, entry_icon, report, size_label
 from tui.cleanup_screen import CleanupScreen
+from strings import TEXT
 from tui.dialogs import InfoDialog, display_path
 
 # While a scan runs, re-sort the storage table at most this often (seconds); values update every tick.
@@ -425,7 +426,7 @@ class SystemStewardApp(App):
             warning = data.get("_warnings")
             status = dashboard.query_one("#dashboard-health-status", Static)
             status.update("△ Some readings are unavailable · open a metric for details." if warning else "Live readings refresh every 5s · select a metric for details.")
-            status.tooltip = warning or "CPU, memory, network and power are sampled directly from macOS."
+            status.tooltip = warning or TEXT.sampled_from
         except (OSError, ValueError, RuntimeError) as exc:
             for key, *_ in METRICS:
                 card = dashboard.query_one(f"#metric-{key}", DashboardCard)
@@ -472,9 +473,9 @@ class SystemStewardApp(App):
     def action_help(self):
         self.push_screen(InfoDialog(f"{APP_NAME} {VERSION} · by {AUTHOR}",
             "Tab / Shift-Tab   Move between panes and controls\n↑ / ↓             Move within a list\nEnter             Explore the highlighted folder\nBackspace         Return to the previous folder\n/                 Search locations\ns                 Sort by size or name\nr                 Rescan\ne                 Export JSON\nc / a             Chrome / Adobe cleanup\nq                 Quit or return from cleanup\n\n"
-            "m                 Native system health & maintenance tools\nk                 Keep Awake (macOS caffeinate)\nd                 Expand or collapse the system dashboard\n\n"
+            f"m                 Native system health & maintenance tools\nk                 Keep Awake ({TEXT.keep_awake_engine})\nd                 Expand or collapse the system dashboard\n\n"
             "CONFIRMATION\nReview the selected targets or tasks, then click the action button or press Y. Esc or N cancels. Enter activates the focused button; Cancel is focused by default.\n\n"
-            "CLEANUP\nSpace toggles a group. Ctrl-A selects all; Ctrl-D selects none.\nChrome and Adobe cleanup permanently clear the selected contents. System tools move selected targets to Trash.\n\n"
+            f"CLEANUP\nSpace toggles a group. Ctrl-A selects all; Ctrl-D selects none.\nChrome and Adobe cleanup permanently clear the selected contents. System tools move selected targets to {TEXT.trash}.\n\n"
             "Mouse support: click categories, rows, checkboxes and buttons; scroll lists and panels.\n\n"
             "Measurements cover selected locations, not the entire disk. Missing, unreadable, timed-out and partial results are labeled. Cleanup estimates may differ from actual disk space reclaimed."))
 
