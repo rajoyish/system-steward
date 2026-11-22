@@ -33,10 +33,9 @@ class KeepAwakeScreen(Screen):
     def compose(self):
         with Horizontal(classes="topbar"):
             yield Label(BRAND, classes="brand")
-            yield Label(f"KEEP AWAKE · {TEXT.os_name}", classes="top-context")
-            yield Button("← Back", id="awake-back")
+            yield Label("›  ◷ Keep Awake", classes="top-context")
+            yield Button("← Back  esc", id="awake-back", compact=True)
         with VerticalScroll(id="awake-workspace"):
-            yield Label("Keep Awake", classes="page-title")
             yield Static(TEXT.keep_awake_intro, classes="awake-copy")
             yield Static("", id="awake-status")
             yield Label("Prevent", classes="eyebrow")

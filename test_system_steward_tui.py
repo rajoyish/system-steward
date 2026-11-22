@@ -72,6 +72,9 @@ class UITests(unittest.IsolatedAsyncioTestCase):
         with patch("tui.app.audit_entries", return_value=entries):
             async with app.run_test(size=(140, 40)) as pilot:
                 await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
+                self.assertEqual(app.view, "dashboard")  # no folder given: start on the dashboard
+                await pilot.press("2")
+                await pilot.pause()
                 navigation = app.query_one("#navigation", Tabs)
                 table = app.query_one("#files", DataTable)
                 self.assertIs(navigation.parent.parent, app.query_one("#main-panel"))
@@ -89,9 +92,13 @@ class UITests(unittest.IsolatedAsyncioTestCase):
                 app.action_back()
                 await self.wait_for(pilot, lambda: app.root is None and app.scan.finished.is_set())
                 self.assertEqual(navigation.active, "Projects")
+                await pilot.press("]")
+                await self.wait_for(pilot, lambda: app.group == "Desktop")
+                await pilot.press("[")
+                await self.wait_for(pilot, lambda: app.group == "Projects")
                 await pilot.resize_terminal(80, 24)
                 await pilot.pause()
-                self.assertFalse(app.query_one("#sidebar").display)
+                self.assertFalse(app.query_one("#details").display)
                 self.assertTrue(navigation.visible)
                 self.assertEqual(navigation.region.height, 2)
                 self.assertGreater(table.region.height, 0)
@@ -108,6 +115,8 @@ class UITests(unittest.IsolatedAsyncioTestCase):
                 await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
                 table = app.query_one("#files", DataTable)
                 await self.wait_for(pilot, lambda: table.row_count == 2)
+                # Let the measured sizes reach the table before observing in-place updates.
+                await self.wait_for(pilot, lambda: all(sig[1] == "done" for sig in app.rendered.values()))
                 with patch.object(app, "populate_table", wraps=app.populate_table) as rebuild, \
                         patch.object(table, "update_cell", wraps=table.update_cell) as update:
                     # Same order, new value: one row's cells change in place.
@@ -151,9 +160,17 @@ class UITests(unittest.IsolatedAsyncioTestCase):
             await self.wait_for(pilot, lambda: table.row_count == 1)
             self.assertEqual(app.active_path, str(self.root / "notes.md"))
             app.query_one("#search", Input).value = ""
+            # Arrow keys navigate folders: → opens, ← goes back up.
+            await self.wait_for(pilot, lambda: table.row_count == 2)
+            table.focus()
+            table.move_cursor(row=table.get_row_index(str(self.root / "website")))
+            await pilot.pause()
+            await pilot.press("right")
+            await self.wait_for(pilot, lambda: app.root == self.root / "website" and app.scan.finished.is_set())
+            await pilot.press("left")
+            await self.wait_for(pilot, lambda: app.root == self.root and app.scan.finished.is_set())
             await pilot.resize_terminal(80, 24)
             await pilot.pause()
-            self.assertFalse(app.query_one("#sidebar").display)
             self.assertFalse(app.query_one("#details").display)
             self.assertEqual(len(table.columns), 3)
             await pilot.resize_terminal(140, 44)

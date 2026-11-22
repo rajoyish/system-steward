@@ -1,4 +1,4 @@
-"""Main System Steward application: storage explorer, dashboard and tool launchers."""
+"""Main System Steward application: a live dashboard and a storage explorer, plus tool launchers."""
 import asyncio
 import datetime
 import json
@@ -10,13 +10,15 @@ from rich.text import Text
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Grid, Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.theme import Theme
-from textual.widgets import Button, DataTable, Footer, Input, Label, ProgressBar, Static, Tab, Tabs
+from textual.widgets import Button, ContentSwitcher, DataTable, Footer, Input, Label, Static, Tab, Tabs
 
 from app_identity import APP_NAME, AUTHOR, BRAND, VERSION
-from dashboard import METRICS, TOOLS, DashboardCard, metric_values
+from dashboard import (BAD, CLEANUP_TOOLS, DIM, GOOD, INFO, METRICS, MUTED, TOOLS, WARN, DashboardCard, DashboardView,
+                       meter, metric_cards)
 from keep_awake import AwakeSession
 from keep_awake_tui import KeepAwakeScreen
 from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
@@ -30,18 +32,33 @@ from tui.dialogs import InfoDialog, display_path
 ORDER_INTERVAL = 1.0
 # Stylesheet lives at the project root; Textual resolves relative CSS paths against this file.
 STYLESHEET = Path(__file__).resolve().parent.parent / "system_steward.tcss"
+# Main-screen actions that only make sense in the storage view (hidden from the footer elsewhere).
+STORAGE_ACTIONS = ("sort", "export", "back", "category", "escape")
+BASE_ACTIONS = ("search", "rescan", "sort", "back", "chrome", "adobe", "maintenance", "keep_awake", "dashboard",
+                "export", "help", "view", "category", "escape")
+METRIC_HINTS = {"resource": "m", "awake": "k"}
+
+
+class FilesTable(DataTable):
+    """Storage table: ← goes up a folder, → / Enter opens the highlighted folder."""
+    BINDINGS = [Binding("left", "app.back", "Up", show=False), Binding("right", "app.open", "Open", show=False)]
 
 
 class SystemStewardApp(App):
     TITLE = APP_NAME
     SUB_TITLE = f"by {AUTHOR}"
     CSS_PATH = STYLESHEET
-    BINDINGS = [Binding("q", "quit", "Quit"), Binding("ctrl+c", "quit", "Quit", show=False),
-                Binding("/", "search", "Search"), Binding("r", "rescan", "Rescan"),
-                Binding("s", "sort", "Sort"), Binding("backspace", "back", "Back"),
-                Binding("c", "chrome", "Chrome"), Binding("a", "adobe", "Adobe"),
-                Binding("m", "maintenance", "System tools"), Binding("k", "keep_awake", "Keep awake"), Binding("d", "dashboard", "Dashboard"),
-                Binding("e", "export", "Export"), Binding("?", "help", "Help")]
+    BINDINGS = [Binding("1", "view('dashboard')", "Dashboard"), Binding("2", "view('storage')", "Storage"),
+                Binding("d", "dashboard", "Switch view", show=False),
+                Binding("/", "search", "Search"), Binding("s", "sort", "Sort"), Binding("e", "export", "Export"),
+                Binding("backspace", "back", "Up"), Binding("escape", "escape", "Back", show=False),
+                Binding("r", "rescan", "Refresh"),
+                Binding("[", "category(-1)", "Previous category", show=False),
+                Binding("]", "category(1)", "Next category", show=False),
+                Binding("c", "chrome", "Chrome", show=False), Binding("a", "adobe", "Adobe", show=False),
+                Binding("m", "maintenance", "System tools", show=False),
+                Binding("k", "keep_awake", "Keep awake", show=False),
+                Binding("?", "help", "Help"), Binding("q", "quit", "Quit"), Binding("ctrl+c", "quit", "Quit", show=False)]
 
     def __init__(self, root=None, timeout=120, home=None):
         super().__init__()
@@ -58,126 +75,149 @@ class SystemStewardApp(App):
         self.order_stale = False
         self.active_path = None
         self.show_footprint = True
-        self.dashboard_expanded = None
-        self.dashboard_manual = False
+        self.view = "storage" if root else "dashboard"
         self.dashboard_sampling = False
         self.dashboard_sampler = SystemSampler()
         self.dashboard_sample = None
+        self.painted = {}          # widget id -> last content, to skip redundant updates
         self.awake = AwakeSession()
         self.register_theme(Theme(name="system-steward", primary="#71e5bb", secondary="#96a6e8", accent="#96a6e8",
                                   foreground="#dde7ef", background="#0c1218", surface="#121c25", panel="#17232e",
                                   success="#71e5bb", warning="#edbf75", error="#f18087", dark=True))
         self.theme = "system-steward"
 
+    @property
+    def dashboard_expanded(self):
+        return self.view == "dashboard"
+
     def compose(self) -> ComposeResult:
-        with Horizontal(classes="topbar"):
+        with Horizontal(id="topbar", classes="topbar"):
             with Vertical(id="app-identity"):
-                yield Label(BRAND, classes="brand")
-                credit = Label(f"by {AUTHOR}", id="version")
-                credit.tooltip = f"{APP_NAME} {VERSION}"
-                yield credit
-            yield Label("YOUR SYSTEM, WITH ROOM TO BREATHE", classes="top-context")
-            yield Button("System dashboard ▾", id="dashboard-toggle")
-        with VerticalScroll(id="dashboard", can_focus=False):
-            with Horizontal(id="metrics"):
-                with Vertical(classes="metric"):
-                    yield Label("VOLUME USED", classes="eyebrow")
-                    yield Static("—", id="disk-used", classes="metric-value")
-                    yield ProgressBar(total=100, show_percentage=False, show_eta=False, id="disk-bar")
-                    yield Static("Space occupied on this volume", classes="metric-caption")
-                with Vertical(classes="metric"):
-                    yield Label("AVAILABLE", classes="eyebrow")
-                    yield Static("—", id="disk-free", classes="metric-value positive")
-                    yield Static("Free space on this volume", classes="metric-caption")
-                with Vertical(classes="metric"):
-                    yield Label("MEASURED LOCATIONS", classes="eyebrow")
-                    yield Static("—", id="measured", classes="metric-value")
-                    yield Static("Discovering your storage…", id="scan-status", classes="metric-caption")
-                    yield Static("Total of the scanned locations", classes="metric-caption")
-            with Vertical(id="dashboard-extras"):
-                with Horizontal(id="system-metrics"):
-                    for key, title, description, tooltip in METRICS:
-                        card = DashboardCard(title, description, id=f"metric-{key}", classes="system-metric", tooltip=tooltip)
-                        card.set_value("Reading…")
-                        yield card
-                with Horizontal(id="dashboard-tools-heading"):
-                    yield Label("SYSTEM TOOLS", classes="eyebrow")
-                    yield Static("Live readings every 5s · tools open previews before changes.", id="dashboard-health-status")
-                with Vertical(id="dashboard-tools"):
-                    for offset in (0, 3):
-                        with Horizontal(classes="tool-row"):
-                            for key, title, description in TOOLS[offset:offset + 3]:
-                                yield DashboardCard(title, description, id=f"tool-{key}", classes="feature-card")
-        with Horizontal(id="workspace"):
-            with VerticalScroll(id="sidebar"):
-                yield Label("QUICK ACCESS", classes="eyebrow")
-                yield Button("◷  Keep awake", id="keep-awake")
-                yield Label("CLEANUP & MAINTENANCE", classes="eyebrow")
-                yield Button(f"{GROUP_ICONS['Browsers']}  Chrome cleanup", id="chrome")
-                yield Button(f"{GROUP_ICONS['Creative']}  Adobe caches", id="adobe")
-                yield Button("◇  System tools", id="maintenance")
-                yield Static("Scan first.\nChoose deliberately.\nKeep what matters.", id="sidebar-note")
-            with Vertical(id="main-panel", classes="panel"):
-                with Horizontal(id="table-toolbar"):
-                    yield Label("Overview", id="scope-title")
-                    yield Input(placeholder="Search locations…  /", id="search")
-                yield Static("Selected locations, not a full disk inventory", id="scope-path")
-                with Horizontal(id="explore-navigation"):
-                    yield Label("EXPLORE", classes="eyebrow")
-                    yield Tabs(*(Tab(f"{GROUP_ICONS[group]}  {group if group != 'All' else 'Overview'}", id=group)
-                                 for group in GROUPS), active="All", id="navigation")
-                with Horizontal(id="inspector-panes"):
-                    yield DataTable(id="files", cursor_type="row", zebra_stripes=True, show_row_labels=False)
-                    with VerticalScroll(id="details"):
-                        yield Label("INSPECT", classes="eyebrow")
-                        yield Static("Select a location", id="detail-name")
-                        yield Static("—", id="detail-size", classes="metric-value")
-                        yield Button("Open folder →", id="explore", disabled=True)
-                        yield Static("", id="detail-path")
-                        yield Static("", id="detail-status")
-                        yield Static("Directory sizes use allocated disk blocks. Partial results can undercount.", id="detail-hint")
-                yield Static("↑↓ Select a location · Enter explores a folder", id="selected-path")
-                with Horizontal(id="table-actions"):
-                    yield Button("← Back", id="back")
-                    yield Button("↻ Rescan", id="rescan")
-                    yield Button("↓ Size", id="sort")
-                    yield Button("↥ Export", id="export")
+                brand = Label(BRAND, classes="brand")
+                brand.tooltip = f"{APP_NAME} {VERSION}"
+                yield brand
+                yield Label(f"by {AUTHOR}", id="author")
+            yield Tabs(Tab("Dashboard  1", id="view-dashboard"), Tab("Storage  2", id="view-storage"),
+                       active=f"view-{self.view}", id="views")
+            yield Button("◷ Keep awake", id="keep-awake", compact=True)
+        with ContentSwitcher(id="view-switcher", initial=self.view):
+            yield from self.compose_dashboard()
+            yield from self.compose_storage()
         yield Static("Enlarge the terminal to at least 64 × 22.", id="too-small")
         yield Footer()
 
+    def compose_dashboard(self) -> ComposeResult:
+        with DashboardView(id="dashboard", can_focus=False):
+            with Horizontal(id="dashboard-heading", classes="section-heading"):
+                yield Label("SYSTEM", classes="eyebrow")
+                yield Static("Reading live system data…", id="dashboard-health-status")
+            with Grid(id="metric-grid", classes="card-grid"):
+                for key, title, caption, tooltip in METRICS:
+                    yield DashboardCard(title, caption, id=f"metric-{key}", classes="system-metric",
+                                        tooltip=tooltip, key_hint=METRIC_HINTS.get(key))
+            with Horizontal(id="dashboard-panels"):
+                with Vertical(id="processes-panel", classes="panel"):
+                    yield Label("TOP PROCESSES", classes="eyebrow")
+                    yield DataTable(id="top-processes", cursor_type="row", zebra_stripes=True)
+                with Vertical(id="storage-panel", classes="panel"):
+                    with Horizontal(classes="section-heading"):
+                        yield Label("STORAGE", classes="eyebrow")
+                        yield Button("Explore  2 →", id="open-storage", compact=True)
+                    yield Static("Measuring…", id="storage-breakdown")
+            with Horizontal(classes="section-heading"):
+                yield Label("TOOLS", classes="eyebrow")
+                yield Static("Every tool previews its changes before anything is removed.", classes="section-note")
+            with Grid(id="tool-grid", classes="card-grid"):
+                for key, title, description, hint in CLEANUP_TOOLS:
+                    yield DashboardCard(title, description, id=f"tool-{key}", classes="feature-card", key_hint=hint)
+                for key, title, description in TOOLS:
+                    yield DashboardCard(title, description, id=f"tool-{key}", classes="feature-card")
+
+    def compose_storage(self) -> ComposeResult:
+        with Vertical(id="storage"):
+            with Vertical(id="main-panel", classes="panel"):
+                with Horizontal(id="table-toolbar"):
+                    with Vertical(id="scope"):
+                        yield Label("Overview", id="scope-title")
+                        yield Static("", id="scope-path")
+                    yield Input(placeholder="Search  /", id="search")
+                with Horizontal(id="explore-navigation"):
+                    yield Tabs(*(Tab(f"{GROUP_ICONS[group]} {group if group != 'All' else 'All'}", id=group)
+                                 for group in GROUPS), active="All", id="navigation")
+                with Horizontal(id="inspector-panes"):
+                    yield FilesTable(id="files", cursor_type="row", zebra_stripes=True, show_row_labels=False)
+                    with VerticalScroll(id="details"):
+                        yield Static("Select a location", id="detail-name")
+                        yield Static("—", id="detail-size", classes="metric-value")
+                        yield Static("", id="detail-status")
+                        yield Static("", id="detail-path")
+                        yield Button("Open folder  ↵", id="explore", disabled=True, compact=True)
+                with Horizontal(id="table-actions"):
+                    yield Button("← Up", id="back", compact=True, tooltip="Go up to the previous folder (Backspace or ←)")
+                    yield Button("↻ Rescan", id="rescan", compact=True, tooltip="Measure these locations again (r)")
+                    yield Button("Sort: size", id="sort", compact=True, tooltip="Sort by size or name (s)")
+                    yield Button("Export JSON", id="export", compact=True, tooltip="Save a JSON report to the current folder (e)")
+                    yield Static("↑↓ select · ↵ open · ← up · [ ] category", id="storage-hint")
+
     def on_mount(self):
         self.configure_columns()
-        table = self.query_one("#files", DataTable)
+        self.query_one("#top-processes", DataTable).add_columns("PROCESS", "CPU %", "MEM %")
         self.refresh_storage()
         self.set_interval(.25, self.tick)
-        table.focus()
         self.resize_layout(self.size.width, self.size.height)
         self.set_interval(5, self.refresh_dashboard)
         self.set_interval(1, self.refresh_awake_indicator)
-        self.refresh_dashboard()
+        self.action_view(self.view, force=True)
+        self.refresh_awake_indicator()
+
+    # ── Views ──────────────────────────────────────────────────────────────
+
+    def action_view(self, name, force=False):
+        if name == self.view and not force:
+            return
+        self.view = name
+        self.query_one("#view-switcher", ContentSwitcher).current = name
+        tabs = self.query_one("#views", Tabs)
+        with tabs.prevent(Tabs.TabActivated):
+            tabs.active = f"view-{name}"
+        self.set_class(name == "dashboard", "dashboard-expanded")
+        if name == "dashboard":
+            self.query_one("#metric-disk").focus()
+            self.refresh_dashboard()
+            self.painted.pop("storage-breakdown", None)
+        else:
+            self.query_one("#files", DataTable).focus()
+        self.refresh_bindings()
+
+    def action_dashboard(self):
+        self.action_view("storage" if self.view == "dashboard" else "dashboard")
+
+    @on(Tabs.TabActivated, "#views")
+    def view_tab(self, event):
+        self.action_view(event.tab.id.removeprefix("view-"))
+
+    @on(Button.Pressed, "#open-storage")
+    def open_storage(self):
+        self.action_view("storage")
+
+    # ── Layout ─────────────────────────────────────────────────────────────
 
     def configure_columns(self):
         table = self.query_one("#files", DataTable)
         table.clear(columns=True)
-        table.add_column("LOCATION", key="name", width=28)
-        table.add_column("ALLOCATED", key="size", width=12)
+        table.add_column("LOCATION", key="name", width=30)
+        table.add_column("SIZE", key="size", width=11)
         if self.show_footprint:
-            table.add_column("FOOTPRINT", key="share", width=10)
+            table.add_column("SHARE", key="share", width=16)
         table.add_column("STATUS", key="status", width=12)
 
     def on_resize(self, event):
         self.resize_layout(event.size.width, event.size.height)
 
     def resize_layout(self, width, height):
-        if not self.dashboard_manual:
-            self.dashboard_expanded = width >= 110 and height >= 44
-        self.set_class(bool(self.dashboard_expanded), "dashboard-expanded")
-        self.set_class(height < 36, "short-dashboard")
-        self.set_class(width < 140, "dashboard-compact")
-        if self.is_mounted:
-            self.query_one("#dashboard-toggle", Button).label = "System dashboard ▴" if self.dashboard_expanded else "System dashboard ▾"
-        self.set_class(width < 125, "compact")
         self.set_class(width < 100, "narrow")
+        self.set_class(width < 125, "compact")
+        self.set_class(height < 34, "short-dashboard")
         self.set_class(width < 64 or height < 22, "tiny")
         if self.is_mounted and self.show_footprint != (width >= 85):
             self.show_footprint = width >= 85
@@ -185,12 +225,22 @@ class SystemStewardApp(App):
             self.snapshot = None
             self.tick()
 
+    def paint(self, identifier, content, widget=None):
+        """Update a Static only when its content changed."""
+        key = repr(content) if isinstance(content, Text) else content
+        if self.painted.get(identifier) != key:
+            self.painted[identifier] = key
+            (widget or self.query_one(f"#{identifier}", Static)).update(content)
+
+    # ── Storage scan ───────────────────────────────────────────────────────
+
     def refresh_storage(self):
         if self.root and not self.root.is_dir():
             self.root, self.group, self.stack = None, "All", []
         navigation = self.query_one("#navigation", Tabs)
         with navigation.prevent(Tabs.TabActivated):
             navigation.active = self.group
+        self.query_one("#back", Button).disabled = not self.stack and not self.search_text
         self.run_worker(self.load_scan(), exclusive=True, group="scan")
 
     async def load_scan(self):
@@ -208,21 +258,14 @@ class SystemStewardApp(App):
             await asyncio.to_thread(self.scan.close)
 
     def tick(self):
-        if not self.scan or not self.is_mounted or len(self.screen_stack) > 1 or not list(self.query("#disk-used")):
+        if not self.scan or not self.is_mounted or len(self.screen_stack) > 1:
             return
-        location = self.root or ("/System/Volumes/Data" if Path("/System/Volumes/Data").exists() else "/")
         try:
-            disk = shutil.disk_usage(location)
-            percent = disk.used / disk.total * 100
-            self.query_one("#disk-used", Static).update(f"{size_label(disk.used)}  [dim]{percent:.0f}%[/]")
-            self.query_one("#disk-free", Static).update(size_label(disk.free))
-            self.query_one("#disk-bar", ProgressBar).update(progress=percent)
-        except OSError:
-            pass
-        measured = sum(entry.size for entry in self.scan.entries)
-        self.query_one("#measured", Static).update(size_label(measured))
-        done = sum(entry.status not in ("queued", "scanning") for entry in self.scan.entries)
-        self.query_one("#scan-status", Static).update(f"{'✓ Scan complete' if self.scan.finished.is_set() else '◐ Scanning'} · {done}/{len(self.scan.entries)} locations")
+            self.apply_scan_progress()
+        except NoMatches:
+            pass  # widgets are being torn down (app exit); nothing to update
+
+    def apply_scan_progress(self):
         data = tuple((entry.path, entry.size, entry.status) for entry in self.scan.entries)
         view = (id(self.scan), self.root, self.group, self.search_text, self.by_size, self.show_footprint)
         if self.snapshot is None or self.snapshot[0] != view:
@@ -231,6 +274,34 @@ class SystemStewardApp(App):
         elif data != self.snapshot[1] or self.order_stale:
             self.snapshot = (view, data)
             self.update_rows()
+        self.update_scope()
+        if self.view == "dashboard":
+            self.update_breakdown()
+
+    def scan_progress(self):
+        done = sum(entry.status not in ("queued", "scanning") for entry in self.scan.entries)
+        return done, len(self.scan.entries), self.scan.finished.is_set()
+
+    def update_scope(self):
+        entries = list(self.visible_entries.values())
+        total = sum(entry.size for entry in entries)
+        done, count, finished = self.scan_progress()
+        scope = self.group if self.group != "All" else (self.root.name or str(self.root) if self.root else "Common locations")
+        title = Text(f"{scope}", style="bold")
+        title.append(f"   {len(entries)} items · {size_label(total)}", style=INFO)
+        if not finished:
+            title.append(f"   ◐ measuring {done}/{count}", style=WARN)
+        self.paint("scope-title", title, self.query_one("#scope-title", Label))
+        where = display_path(self.root) if self.root else Text("App caches, developer folders and projects")
+        location = self.root or ("/System/Volumes/Data" if Path("/System/Volumes/Data").exists() else Path.home().anchor or "/")
+        try:
+            disk = shutil.disk_usage(location)
+            where.append(f"  ·  {size_label(disk.free)} free of {size_label(disk.total)}", style=INFO)
+        except OSError:
+            pass
+        if any(entry.status == "partial" for entry in entries):
+            where.append("  ·  * partial size", style=WARN)
+        self.paint("scope-path", where)
 
     def filtered_entries(self):
         needle = self.search_text.casefold()
@@ -244,17 +315,21 @@ class SystemStewardApp(App):
         entries.sort(key=(lambda entry: (-entry.size, entry.name.casefold())) if self.by_size else lambda entry: entry.name.casefold())
         return entries
 
-    def row_cells(self, entry, peak):
+    def row_cells(self, entry, peak, total):
         """(signature, {column: cell}) for one row; the signature detects which cells changed."""
         bar_length = round(entry.size / peak * 10)
-        size = Text(size_label(entry.size) + (" *" if entry.status == "partial" else ""), style="#71e5bb")
-        size = size if entry.status in ("done", "partial") else Text("—", style="#8395a5")
-        status = Text(("✓ Ready" if entry.status == "done" else "◐ Scanning" if entry.status == "scanning" else clean(entry.status)),
-                      style="#8395a5" if entry.status in ("queued", "done") else "#edbf75")
+        share = round(entry.size / total * 100) if total else 0
+        measured = entry.status in ("done", "partial")
+        size = Text(size_label(entry.size) + (" *" if entry.status == "partial" else ""), style=GOOD) if measured else Text("—", style=DIM)
+        label = {"done": "", "partial": "partial", "scanning": "◐ measuring", "queued": "queued"}.get(entry.status, clean(entry.status))
+        status = Text(label, style=DIM if entry.status in ("queued", "scanning") else WARN)
         cells = {"size": size, "status": status}
         if self.show_footprint:
-            cells["share"] = Text("━" * bar_length, style="#96a6e8")
-        return (entry.size, entry.status, bar_length), cells
+            bar = Text("━" * bar_length, style="#96a6e8")
+            bar.append("━" * (10 - bar_length), style="#1f2e3a")
+            bar.append(f" {share:>3}%", style=MUTED)
+            cells["share"] = bar
+        return (entry.size, entry.status, bar_length, share), cells
 
     def update_rows(self):
         """Apply scan progress without rebuilding the table (sorting at most once per second)."""
@@ -268,10 +343,10 @@ class SystemStewardApp(App):
             self.order_stale = False
         table = self.query_one("#files", DataTable)
         peak = max((entry.size for entry in entries), default=1) or 1
+        total = sum(entry.size for entry in entries)
         for entry in entries:
-            signature, cells = self.row_cells(entry, peak)
-            previous = self.rendered.get(entry.path)
-            if previous == signature:
+            signature, cells = self.row_cells(entry, peak, total)
+            if self.rendered.get(entry.path) == signature:
                 continue
             self.rendered[entry.path] = signature
             for column, cell in cells.items():
@@ -282,14 +357,18 @@ class SystemStewardApp(App):
     def populate_table(self):
         table = self.query_one("#files", DataTable)
         selected = self.active_path
+        # While measuring, a cursor resting on the first row follows whatever sorts to the top.
+        if table.cursor_row == 0 and not self.scan.finished.is_set():
+            selected = None
         entries = self.filtered_entries()
         self.visible_entries = {entry.path: entry for entry in entries}
         self.last_order, self.order_stale, self.rendered = time.monotonic(), False, {}
         table.clear()
         peak = max((entry.size for entry in entries), default=1) or 1
+        total = sum(entry.size for entry in entries)
         for entry in entries:
             name = Text(f"{entry_icon(entry, bool(self.root))}  {clean(entry.name)}")
-            signature, cells = self.row_cells(entry, peak)
+            signature, cells = self.row_cells(entry, peak, total)
             self.rendered[entry.path] = signature
             row = [name, cells["size"]] + ([cells["share"]] if self.show_footprint else []) + [cells["status"]]
             table.add_row(*row, key=entry.path)
@@ -300,14 +379,12 @@ class SystemStewardApp(App):
             self.set_detail(entries[0])
         else:
             self.active_path = None
-            self.query_one("#selected-path", Static).update("No matching locations. Clear the search or choose another category.")
-            self.query_one("#detail-name", Static).update("No matching location")
+            message = "No matches. Press Esc to clear the search." if self.search_text else "Nothing here yet."
+            self.query_one("#detail-name", Static).update(message)
             self.query_one("#detail-path", Static).update("")
+            self.query_one("#detail-status", Static).update("")
             self.query_one("#detail-size", Static).update("—")
             self.query_one("#explore", Button).disabled = True
-        scope = self.group if self.group != "All" else "Overview"
-        self.query_one("#scope-title", Label).update(f"{scope}  ·  {len(entries)} locations")
-        self.query_one("#scope-path", Static).update(display_path(self.root) if self.root else "Selected locations · allocated sizes · * partial result")
 
     @on(DataTable.RowHighlighted, "#files")
     def highlight(self, event):
@@ -317,11 +394,19 @@ class SystemStewardApp(App):
 
     def set_detail(self, entry):
         self.active_path = entry.path
+        total = sum(item.size for item in self.visible_entries.values())
+        measured = entry.status in ("done", "partial")
         self.query_one("#detail-name", Static).update(Text(entry.name, style="bold"))
-        self.query_one("#detail-size", Static).update(size_label(entry.size) if entry.status in ("done", "partial") else "—")
+        self.query_one("#detail-size", Static).update(size_label(entry.size) if measured else "—")
+        facts = []
+        if measured and total:
+            facts.append(f"{entry.size / total * 100:.0f}% of this view")
+        if entry.group not in ("Folder contents",):
+            facts.append(entry.group)
+        if entry.status != "done":
+            facts.append(clean(entry.status))
+        self.query_one("#detail-status", Static).update(Text(" · ".join(facts)))
         self.query_one("#detail-path", Static).update(display_path(entry.path))
-        self.query_one("#detail-status", Static).update(Text(f"{entry.group}\n{entry.status}"))
-        self.query_one("#selected-path", Static).update(display_path(entry.path))
         self.query_one("#explore", Button).disabled = not Path(entry.path).is_dir()
 
     @on(DataTable.RowSelected, "#files")
@@ -333,6 +418,9 @@ class SystemStewardApp(App):
             self.query_one("#search", Input).value = ""
             self.refresh_storage()
 
+    def action_open(self):
+        self.explore()
+
     @on(Tabs.TabActivated, "#navigation")
     def navigate(self, event):
         if self.group == event.tab.id:
@@ -341,9 +429,14 @@ class SystemStewardApp(App):
         self.snapshot = None
         self.tick()
 
+    def action_category(self, step):
+        index = (GROUPS.index(self.group) + step) % len(GROUPS)
+        self.query_one("#navigation", Tabs).active = GROUPS[index]
+
     @on(Input.Changed, "#search")
     def search_changed(self, event):
         self.search_text = event.value
+        self.query_one("#back", Button).disabled = not self.stack and not self.search_text
         self.tick()
 
     @on(Input.Submitted, "#search")
@@ -351,7 +444,17 @@ class SystemStewardApp(App):
         self.query_one("#files", DataTable).focus()
 
     def action_search(self):
+        if self.view != "storage":
+            self.action_view("storage")
         self.query_one("#search", Input).focus()
+
+    def action_escape(self):
+        search = self.query_one("#search", Input)
+        if self.focused is search or search.value:
+            search.value = ""
+            self.query_one("#files", DataTable).focus()
+        elif self.stack:
+            self.action_back()
 
     @on(Button.Pressed, "#back")
     def action_back(self):
@@ -366,11 +469,13 @@ class SystemStewardApp(App):
     @on(Button.Pressed, "#rescan")
     def action_rescan(self):
         self.refresh_storage()
+        if self.view == "dashboard":
+            self.refresh_dashboard()
 
     @on(Button.Pressed, "#sort")
     def action_sort(self):
         self.by_size = not self.by_size
-        self.query_one("#sort", Button).label = "↓ Size" if self.by_size else "A–Z Name"
+        self.query_one("#sort", Button).label = "Sort: size" if self.by_size else "Sort: name"
         self.tick()
 
     @on(Button.Pressed, "#export")
@@ -384,38 +489,60 @@ class SystemStewardApp(App):
             except OSError as exc:
                 self.notify(str(exc), severity="error")
 
-    @on(Button.Pressed, "#chrome")
-    def action_chrome(self):
-        self.push_screen(CleanupScreen("Chrome", self.home, self.timeout))
+    # ── Dashboard ──────────────────────────────────────────────────────────
 
-    @on(Button.Pressed, "#adobe")
-    def action_adobe(self):
-        self.push_screen(CleanupScreen("Adobe", self.home, self.timeout))
-
-    @on(Button.Pressed, "#dashboard-toggle")
-    def action_dashboard(self):
-        self.dashboard_manual = True
-        self.dashboard_expanded = not self.dashboard_expanded
-        self.resize_layout(self.size.width, self.size.height)
-        if self.dashboard_expanded:
-            self.refresh_dashboard()
-        else:
-            self.query_one("#dashboard").scroll_home(animate=False)
+    def update_breakdown(self):
+        widget = self.query_one("#storage-breakdown", Static)
+        width = max(10, widget.size.width or 40)
+        sizes, seen = {}, set()
+        for entry in self.scan.entries:
+            if entry.path not in seen:
+                seen.add(entry.path)
+                sizes[entry.group] = sizes.get(entry.group, 0) + entry.size
+        done, count, finished = self.scan_progress()
+        total = sum(sizes.values())
+        disks = (self.dashboard_sample or {}).get("disks") or []
+        signature = (width, tuple(sorted(sizes.items())), done, finished, tuple((d.get("mount"), d.get("used")) for d in disks))
+        if self.painted.get("storage-breakdown") == signature:
+            return
+        self.painted["storage-breakdown"] = signature
+        text = Text()
+        text.append(size_label(total), style=f"bold {GOOD}")
+        text.append(" measured" + ("" if self.root is None else f" in {self.root.name}"), style=INFO)
+        if not finished:
+            text.append(f"  ◐ {done}/{count}", style=WARN)
+        bar_width = max(4, width - 25)
+        peak = max(sizes.values(), default=1) or 1
+        for group, size in sorted(sizes.items(), key=lambda item: -item[1]):
+            text.append(f"\n{GROUP_ICONS.get(group, '•')} {group[:10]:<10} ")
+            filled = round(size / peak * bar_width)
+            text.append("━" * filled, style="#96a6e8").append("━" * (bar_width - filled), style="#1f2e3a")
+            text.append(f" {size_label(size):>9}", style=MUTED)
+        if disks:
+            text.append("\n\nDRIVES", style=f"bold {MUTED}")
+            for disk in disks:
+                percent = disk.get("used_percent") or 0
+                mount = str(disk.get("mount", "?"))
+                text.append(f"\n{(Path(mount).name or mount)[:10]:<12}")
+                text.append_text(meter(percent, bar_width))
+                text.append(f" {percent:>4.0f}%", style=MUTED)
+        widget.update(text)
 
     def refresh_dashboard(self):
-        if not self.is_mounted or not self.dashboard_expanded or self.dashboard_sampling or len(self.screen_stack) > 1:
+        if not self.is_mounted or self.view != "dashboard" or self.dashboard_sampling or len(self.screen_stack) > 1:
             return
         self.dashboard_sampling = True
         self.run_worker(self.sample_dashboard(), group="dashboard-health", exclusive=True)
 
     async def sample_dashboard(self):
         dashboard = self.screen_stack[0]
+        status = dashboard.query_one("#dashboard-health-status", Static)
         try:
             data = await asyncio.to_thread(self.dashboard_sampler.sample)
             self.dashboard_sample = data
-            for key, value in metric_values(data).items():
-                dashboard.query_one(f"#metric-{key}", DashboardCard).set_value(value)
-            for key, _title, _description, tooltip in METRICS:
+            for key, (value, caption, percent, inverted) in metric_cards(data).items():
+                dashboard.query_one(f"#metric-{key}", DashboardCard).set_value(value, caption, percent, inverted)
+            for key, _title, _caption, tooltip in METRICS:
                 detail = tooltip
                 if key == "resource":
                     detail = data.get("health_score_msg") or tooltip
@@ -423,37 +550,74 @@ class SystemStewardApp(App):
                     interfaces = [item.get("name", "") for item in data.get("network") or []]
                     detail += "\nReported interfaces: " + (", ".join(interfaces) or "None")
                 dashboard.query_one(f"#metric-{key}").tooltip = detail
+            self.update_processes(data.get("top_processes") or [])
+            self.painted.pop("storage-breakdown", None)
             warning = data.get("_warnings")
-            status = dashboard.query_one("#dashboard-health-status", Static)
-            status.update("△ Some readings are unavailable · open a metric for details." if warning else "Live readings refresh every 5s · select a metric for details.")
+            stamp = datetime.datetime.now().strftime("%H:%M:%S")
+            line = Text(f"Live · updated {stamp} · every 5s · Enter on a card opens details", style=INFO)
+            if warning:
+                line = Text(f"△ Some readings unavailable · updated {stamp} · open a card for details", style=WARN)
+            status.update(line)
             status.tooltip = warning or TEXT.sampled_from
         except (OSError, ValueError, RuntimeError) as exc:
             for key, *_ in METRICS:
+                if key == "awake":
+                    continue
                 card = dashboard.query_one(f"#metric-{key}", DashboardCard)
                 card.set_value("Unavailable")
                 card.tooltip = f"Could not refresh this reading: {exc}"
-            status = dashboard.query_one("#dashboard-health-status", Static)
-            status.update("△ Live readings could not be refreshed · select a metric to retry.")
+            status.update(Text("△ Live readings could not be refreshed · press r to retry.", style=BAD))
             status.tooltip = str(exc)
         finally:
             self.dashboard_sampling = False
 
-    @on(Button.Pressed, ".system-metric")
-    def open_dashboard_status(self):
+    def update_processes(self, processes):
+        table = self.query_one("#top-processes", DataTable)
+        row = table.cursor_row
+        table.clear()
+        for item in processes[:8]:
+            name = Path(str(item.get("name", "?"))).name
+            cpu, memory = item.get("cpu"), item.get("memory")
+            table.add_row(Text(clean(name)),
+                          Text(f"{cpu:5.1f}" if isinstance(cpu, (int, float)) else "—", style=WARN if (cpu or 0) >= 50 else GOOD),
+                          Text(f"{memory:5.1f}" if isinstance(memory, (int, float)) else "—", style=MUTED))
+        if not processes:
+            table.add_row(Text("Waiting for the next sample…", style=MUTED), "", "")
+        if table.row_count:
+            table.move_cursor(row=min(row, table.row_count - 1))
+
+    @on(DataTable.RowSelected, "#top-processes")
+    def open_processes(self):
         self.open_system_tool("status")
+
+    @on(Button.Pressed, ".system-metric")
+    def open_dashboard_status(self, event):
+        self.open_system_tool("awake" if event.button.id == "metric-awake" else "status")
 
     @on(Button.Pressed, ".feature-card")
     def open_dashboard_tool(self, event):
-        self.open_system_tool(event.button.id.removeprefix("tool-"))
+        key = event.button.id.removeprefix("tool-")
+        if key == "chrome":
+            self.action_chrome()
+        elif key == "adobe":
+            self.action_adobe()
+        else:
+            self.open_system_tool(key)
+
+    # ── Tools ──────────────────────────────────────────────────────────────
+
+    def action_chrome(self):
+        self.push_screen(CleanupScreen("Chrome", self.home, self.timeout))
+
+    def action_adobe(self):
+        self.push_screen(CleanupScreen("Adobe", self.home, self.timeout))
 
     def open_system_tool(self, kind):
         if kind == "awake":
             self.push_screen(KeepAwakeScreen(self.awake, self.root))
             return
-        screen = MaintenanceScreen(self.home, self.root, self.timeout, initial_kind=kind)
-        self.push_screen(screen)
+        self.push_screen(MaintenanceScreen(self.home, self.root, self.timeout, initial_kind=kind))
 
-    @on(Button.Pressed, "#maintenance")
     def action_maintenance(self):
         self.open_system_tool("status")
 
@@ -466,22 +630,52 @@ class SystemStewardApp(App):
         if len(self.screen_stack) != 1:
             return
         running = self.awake.poll()
-        for button in self.screen_stack[0].query("#keep-awake"):
-            button.label = "◷  Keep awake · on" if running else "◷  Keep awake"
-            button.tooltip = self.awake.status()
+        status = self.awake.status()
+        base = self.screen_stack[0]
+        for button in base.query("#keep-awake"):
+            button.label = "◷ Keep awake · on" if running else "◷ Keep awake"
+            button.set_class(running, "-on")
+            button.tooltip = status
+        if self.painted.get("metric-awake") != (running, status):
+            self.painted["metric-awake"] = (running, status)
+            summary = str(status).splitlines()[0] if status else ""
+            base.query_one("#metric-awake", DashboardCard).set_value("On" if running else "Off", summary or None)
 
     def action_help(self):
         self.push_screen(InfoDialog(f"{APP_NAME} {VERSION} · by {AUTHOR}",
-            "Tab / Shift-Tab   Move between panes and controls\n↑ / ↓             Move within a list\nEnter             Explore the highlighted folder\nBackspace         Return to the previous folder\n/                 Search locations\ns                 Sort by size or name\nr                 Rescan\ne                 Export JSON\nc / a             Chrome / Adobe cleanup\nq                 Quit or return from cleanup\n\n"
-            f"m                 Native system health & maintenance tools\nk                 Keep Awake ({TEXT.keep_awake_engine})\nd                 Expand or collapse the system dashboard\n\n"
-            "CONFIRMATION\nReview the selected targets or tasks, then click the action button or press Y. Esc or N cancels. Enter activates the focused button; Cancel is focused by default.\n\n"
-            f"CLEANUP\nSpace toggles a group. Ctrl-A selects all; Ctrl-D selects none.\nChrome and Adobe cleanup permanently clear the selected contents. System tools move selected targets to {TEXT.trash}.\n\n"
-            "Mouse support: click categories, rows, checkboxes and buttons; scroll lists and panels.\n\n"
-            "Measurements cover selected locations, not the entire disk. Missing, unreadable, timed-out and partial results are labeled. Cleanup estimates may differ from actual disk space reclaimed."))
+            "VIEWS\n"
+            "1 / 2             Dashboard / Storage (or click the tabs at the top)\n"
+            "d                 Switch between the two views\n"
+            "Tab / Shift-Tab   Move between controls\n\n"
+            "DASHBOARD\n"
+            "Arrow keys        Move between cards\n"
+            "Enter / click     Open the card's details or tool\n"
+            "r                 Refresh readings\n\n"
+            "STORAGE\n"
+            "↑ / ↓             Select a location\n"
+            "Enter / →         Open the highlighted folder\n"
+            "Backspace / ←     Go up to the previous folder\n"
+            "[ / ]             Previous / next category\n"
+            "/                 Search (Esc clears it)\n"
+            "s · r · e         Sort · Rescan · Export JSON\n\n"
+            "TOOLS (from anywhere)\n"
+            f"c / a             Chrome / Adobe cleanup\nm                 System status & maintenance\nk                 Keep Awake ({TEXT.keep_awake_engine})\n"
+            "q                 Quit, or leave a tool screen (also Esc)\n\n"
+            "CLEANUP & CONFIRMATION\n"
+            "Space toggles a group. Ctrl-A selects all; Ctrl-D selects none. Review the selection, then press Y or click the action button; "
+            "Esc or N cancels. Cancel is focused by default, so Enter alone never deletes.\n"
+            f"Chrome and Adobe cleanup permanently clear the selected contents. System tools move selected targets to {TEXT.trash}.\n\n"
+            "ABOUT THE NUMBERS\n"
+            "Storage covers selected locations, not the entire disk. Directory sizes use allocated disk blocks; "
+            "a * marks a partial result that can undercount. Cleanup estimates may differ from the space actually reclaimed."))
 
     def check_action(self, action, parameters):
-        if len(self.screen_stack) > 1 and action in ("search", "rescan", "sort", "back", "chrome", "adobe", "maintenance", "keep_awake", "dashboard", "export", "help"):
+        if len(self.screen_stack) > 1 and action in BASE_ACTIONS:
             return False
+        if action in STORAGE_ACTIONS and self.view != "storage":
+            return False
+        if action == "view" and parameters and parameters[0] == self.view:
+            return None  # shown, dimmed: already here
         if isinstance(self.screen, ModalScreen) and action == "quit":
             return False
         return True

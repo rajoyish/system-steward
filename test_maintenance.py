@@ -196,7 +196,7 @@ class NativeUITests(unittest.IsolatedAsyncioTestCase):
                     app.save_screenshot("maintenance-cleanup.svg", path=str(Path("previews").resolve()))
                     await pilot.press("escape")
                     self.assertNotIsInstance(app.screen, MaintenanceScreen)
-                    self.assertGreaterEqual(backend.call_count, 2)  # Dashboard plus detailed status.
+                    self.assertGreaterEqual(backend.call_count, 1)  # Detailed status (a folder opens Storage, not the dashboard).
 
     async def test_native_analysis_and_backend_preview_gates_execution(self):
         with tempfile.TemporaryDirectory() as folder:

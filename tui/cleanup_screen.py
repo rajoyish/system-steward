@@ -39,13 +39,12 @@ class CleanupScreen(Screen):
 
     def compose(self):
         with Horizontal(classes="topbar"):
-            yield Label(BRAND, classes="brand")
-            yield Label(f"CLEANUP / {self.kind.upper()}", classes="top-context")
-            yield Button("← Back", id="cleanup-back")
-        with Vertical(id="cleanup-workspace"):
             icon = GROUP_ICONS["Browsers" if self.kind == "Chrome" else "Creative"]
-            yield Label(f"{icon}  {self.kind} cleanup", classes="page-title")
-            yield Label("01  Choose files    →    02  Review selection    →    03  Clear & verify", id="steps")
+            yield Label(BRAND, classes="brand")
+            yield Label(f"›  {icon} {self.kind} cleanup", classes="top-context")
+            yield Button("← Back  esc", id="cleanup-back", compact=True)
+        with Vertical(id="cleanup-workspace"):
+            yield Label("1 Choose groups  →  2 Review  →  3 Clear & verify", id="steps")
             with Horizontal(id="cleanup-toolbar"):
                 if self.kind == "Chrome":
                     yield Select([("Browser caches only", "cache"), ("Website data + caches", "sites")],
@@ -69,7 +68,7 @@ class CleanupScreen(Screen):
                                  else "Cache parent folders\nLightroom catalogs\nPresets & plugins\nScripts & workspaces\nLibrary Preferences", id="preserved")
                     yield Button("View skipped paths", id="skipped", disabled=True)
                     yield Button("Inspect selected paths", id="exact-paths")
-            yield Static("Nothing selected. Space toggles a group; click or use ↑↓ to move.", id="selection-summary")
+            yield Static("Nothing selected · Space or click toggles a group", id="selection-summary")
             yield Static("", id="cleanup-result")
             with Horizontal(id="cleanup-actions"):
                 yield Static("Nothing is deleted until you review and confirm.", id="cleanup-note")
@@ -249,7 +248,7 @@ class CleanupScreen(Screen):
         self.query_one("#cleanup-list", SelectionList).disabled = True
         if self.kind == "Chrome":
             self.query_one("#cleanup-scope", Select).disabled = True
-        self.query_one("#steps", Label).update("01  Selected    →    02  Confirmed    →    03  Clearing selected contents")
+        self.query_one("#steps", Label).update("1 Selected  →  2 Confirmed  →  3 Clearing selected contents…")
         await self.app.pause_scan()
         await asyncio.to_thread(self.scan.close)
         job_type = chrome_cleanup.CleanupJob if self.kind == "Chrome" else adobe_cleanup.AdobeCleanupJob
@@ -265,7 +264,7 @@ class CleanupScreen(Screen):
             self.query_one("#stop-cleanup", Button).disabled = True
 
     def show_result(self):
-        self.query_one("#steps", Label).update("01  Selected    →    02  Confirmed    →    03  Complete")
+        self.query_one("#steps", Label).update("1 Selected  →  2 Confirmed  →  3 ✓ Complete")
         amount = sum(self.measurements.get(path, 0) for path in self.job.removed)
         summary = f"{len(self.job.removed)} locations cleared · {size_label(amount)} measured contents removed · {len(self.job.errors)} errors"
         self.query_one("#cleanup-state", Static).update(summary)

@@ -80,15 +80,14 @@ class MaintenanceScreen(Screen):
     def compose(self):
         with Horizontal(classes="topbar"):
             yield Label(BRAND, classes="brand")
-            yield Label("SYSTEM & MAINTENANCE", classes="top-context")
-            yield Button("← Back", id="maintenance-back")
+            yield Label("›  System tools", classes="top-context")
+            yield Button("← Back  esc", id="maintenance-back", compact=True)
         with Vertical(id="maintenance-workspace"):
             with Horizontal(id="maintenance-toolbar"):
                 yield Select([*maintenance.FEATURES[:1], ("Analyze Disk", "analyze"), *maintenance.FEATURES[1:]], value=self.kind, allow_blank=False, id="maintenance-feature")
+                yield Select([(f"Every {n}s", n) for n in (3, 5, 10, 30)], value=5, allow_blank=False, id="health-interval")
                 yield Button("↻ Refresh", id="maintenance-refresh")
             yield Static("", id="maintenance-summary")
-            with Horizontal(id="maintenance-settings"):
-                yield Select([(f"{n}s refresh", n) for n in (3, 5, 10, 30)], value=5, allow_blank=False, id="health-interval")
             yield Input(placeholder="Folder to analyze / scan for developer artifacts", value=str(self.start_root or self.home / "sites"), id="maintenance-path")
             yield Static("", id="maintenance-note")
             yield DataTable(id="health-table", cursor_type="row", zebra_stripes=True)
@@ -106,7 +105,9 @@ class MaintenanceScreen(Screen):
         yield Footer()
 
     def on_mount(self):
-        self.query_one("#health-table", DataTable).add_columns("METRIC", "VALUE")
+        table = self.query_one("#health-table", DataTable)
+        table.add_column("METRIC", width=36)
+        table.add_column("VALUE")
         self.timer = self.set_interval(5, self.refresh_health)
         self.set_class(self.app.size.width < 100, "narrow")
         self.set_class(self.app.size.height < 34, "short")
@@ -123,19 +124,19 @@ class MaintenanceScreen(Screen):
         native = self.kind in {"clean", "purge", "installer", "uninstall", "optimize"}
         for identifier, visible in {
             "health-table": self.kind == "status", "health-interval": self.kind == "status",
-            "maintenance-settings": self.kind == "status",
             "maintenance-list": native, "maintenance-all": native, "maintenance-none": native,
             "maintenance-log": self.kind == "touchid",
             "maintenance-path": self.kind in {"analyze", "purge"},
             "touchid-enable": self.kind == "touchid", "touchid-disable": self.kind == "touchid",
             "maintenance-review": self.kind not in {"status", "touchid"},
+            "maintenance-stop": self.kind not in {"status", "analyze", "touchid"},
         }.items():
             self.show(identifier, visible)
         self.query_one("#maintenance-review", Button).label = {
             "analyze": "Explore folder →", "optimize": "Review selected tasks →"
         }.get(self.kind, "Review selection →")
         notes = {
-            "status": "Live system health · select a metric for details. Refresh keeps the previous sample until a new one arrives.",
+            "status": "Select a row to see its details below.",
             "analyze": "Browse any folder by size using System Steward's native explorer.",
             "clean": TEXT.clean_note,
             "purge": "Scan the folder above. Only generated dependencies and build output are offered. Stop dev servers and builds before removal.",
