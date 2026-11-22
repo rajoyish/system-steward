@@ -443,12 +443,13 @@ class SystemStewardApp(App):
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="topbar"):
-            yield Label(BRAND, classes="brand")
-            yield Label("YOUR MAC, WITH ROOM TO BREATHE", classes="top-context")
+            with Vertical(id="app-identity"):
+                yield Label(BRAND, classes="brand")
+                credit = Label(f"by {AUTHOR}", id="version")
+                credit.tooltip = f"{APP_NAME} {VERSION}"
+                yield credit
+            yield Label("YOUR SYSTEM, WITH ROOM TO BREATHE", classes="top-context")
             yield Button("System dashboard ▾", id="dashboard-toggle")
-            credit = Label(f"by {AUTHOR}", id="version")
-            credit.tooltip = f"{APP_NAME} {VERSION}"
-            yield credit
         with VerticalScroll(id="dashboard", can_focus=False):
             with Horizontal(id="metrics"):
                 with Vertical(classes="metric"):

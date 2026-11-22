@@ -1,8 +1,9 @@
 Screen { background: #0c1218; color: #dde7ef; }
 .topbar { height: 3; padding: 0 2; background: #121c25; align-vertical: middle; }
-.brand { width: 30; color: #71e5bb; text-style: bold; }
+#app-identity { width: 30; height: 2; }
+.brand { width: 30; height: 1; color: #71e5bb; text-style: bold; }
 .top-context { width: 1fr; color: #8395a5; }
-#version { color: #8395a5; width: auto; }
+#version { color: #8395a5; width: 30; height: 1; padding-left: 3; }
 .eyebrow { color: #8395a5; text-style: bold; height: 1; margin-bottom: 1; }
 #metrics { height: 8; margin: 1 2; }
 .metric { width: 1fr; border: round #293b4a; padding: 0 2; margin-right: 1; background: #121c25; }
@@ -170,7 +171,6 @@ ModalScreen { background: #05090db3; align: center middle; }
 .short-dashboard.dashboard-expanded #dashboard { height: 12; }
 .tiny #dashboard { display: none; }
 #dashboard-tools-heading #dashboard-health-status { width: 1fr; }
-.narrow #version { display: none; }
 
 .confirmation-hint { height: auto; color: #8395a5; margin-bottom: 1; }
 .short .confirmation-hint { margin-bottom: 0; }
