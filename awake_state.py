@@ -5,38 +5,19 @@ The record lives in ``~/.system-steward/awake_session.json`` (override the folde
 executable, so a PID that the OS has since reused for an unrelated program is never reported or
 terminated as ours.
 """
-import ctypes
 import json
 import os
 from pathlib import Path
-import sys
 import time
 
+from platforms import IS_WINDOWS
+
+if IS_WINDOWS:
+    from platforms.windows import process_identity as _os_identity, terminate_pid as _os_terminate
+else:
+    from platforms.darwin import process_identity as _os_identity, terminate_pid as _os_terminate
+
 STATE_NAME = "awake_session.json"
-OWNED_EXECUTABLES = ("python", "pythonw", "caffeinate")
-
-if sys.platform == "win32":
-    from ctypes import wintypes
-
-    PROCESS_TERMINATE = 0x0001
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    STILL_ACTIVE = 259
-    ERROR_ACCESS_DENIED = 5
-
-    _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    _kernel32.OpenProcess.restype = wintypes.HANDLE
-    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    _kernel32.CloseHandle.restype = wintypes.BOOL
-    _kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-    _kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-    _kernel32.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4
-    _kernel32.GetProcessTimes.restype = wintypes.BOOL
-    _kernel32.QueryFullProcessImageNameW.argtypes = (wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
-                                                     ctypes.POINTER(wintypes.DWORD))
-    _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-    _kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
-    _kernel32.TerminateProcess.restype = wintypes.BOOL
 
 
 def state_dir():
@@ -50,49 +31,6 @@ def state_file():
 
 # ---------------------------------------------------------------- process identity
 
-def _windows_identity(pid):
-    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not handle:
-        if ctypes.get_last_error() == ERROR_ACCESS_DENIED:
-            # Alive, but not inspectable by this user, so it cannot be our session.
-            return {"alive": True, "create_time": None, "exe": None}
-        return None
-    try:
-        code = wintypes.DWORD()
-        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != STILL_ACTIVE:
-            return None
-        created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        create_time = None
-        if _kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
-                                     ctypes.byref(kernel), ctypes.byref(user)):
-            create_time = (created.dwHighDateTime << 32) | created.dwLowDateTime
-        size = wintypes.DWORD(32768)
-        buffer = ctypes.create_unicode_buffer(size.value)
-        exe = buffer.value if _kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)) else None
-        return {"alive": True, "create_time": create_time, "exe": exe}
-    finally:
-        _kernel32.CloseHandle(handle)
-
-
-def _posix_identity(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return None
-    except PermissionError:
-        return {"alive": True, "create_time": None, "exe": None}
-    import subprocess  # only needed on POSIX; keeps the Windows helper's imports minimal
-    try:
-        result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart=", "-o", "comm="],
-                                capture_output=True, text=True, timeout=3, env={**os.environ, "LC_ALL": "C"})
-    except (OSError, subprocess.SubprocessError):
-        return {"alive": True, "create_time": None, "exe": None}
-    parts = result.stdout.split(None, 5)
-    if result.returncode or len(parts) < 6:
-        return None
-    return {"alive": True, "create_time": " ".join(parts[:5]), "exe": parts[5].strip()}
-
-
 def process_identity(pid):
     """Return {"alive", "create_time", "exe"} for a live PID, or None when it is not running."""
     try:
@@ -101,7 +39,7 @@ def process_identity(pid):
         return None
     if pid <= 0:
         return None
-    return _windows_identity(pid) if sys.platform == "win32" else _posix_identity(pid)
+    return _os_identity(pid)
 
 
 def process_alive(pid):
@@ -191,18 +129,4 @@ def terminate(state):
     """Terminate the recorded process only after re-verifying it is ours. Returns True if signalled."""
     if not verify_owned(state):
         return False
-    pid = int(state["pid"])
-    if sys.platform == "win32":
-        handle = _kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
-        if not handle:
-            return False
-        try:
-            return bool(_kernel32.TerminateProcess(handle, 1))
-        finally:
-            _kernel32.CloseHandle(handle)
-    import signal
-    try:
-        os.kill(pid, signal.SIGTERM)
-        return True
-    except OSError:
-        return False
+    return _os_terminate(int(state["pid"]))

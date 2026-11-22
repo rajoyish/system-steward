@@ -84,11 +84,12 @@ class DiscoveryTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Windows Recycle Bin")
     def test_recycle_path_refuses_drives_without_a_recycle_bin(self):
-        with patch("ctypes.WinDLL") as dll:
-            dll.return_value.GetDriveTypeW.return_value = 4  # DRIVE_REMOTE
+        from platforms import windows as win
+        with patch("platforms.windows.drive_type", return_value=win.DRIVE_REMOTE), \
+                patch.object(win.api().shell32, "SHFileOperationW") as shell:
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 maintenance.recycle_path(self.put("Downloads/x.msi"))
-            dll.return_value.SHFileOperationW.assert_not_called()
+            shell.assert_not_called()
 
     def test_artifacts_and_installers_leave_source_and_unrelated_builds(self):
         self.put("sites/project/package.json")

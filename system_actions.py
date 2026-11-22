@@ -98,6 +98,12 @@ async def run_process(argv, output=None, timeout=180):
                     except OSError:
                         pass
                 await process.wait()
+        # A timeout cancels the reader mid-stream, and a grandchild (e.g. under `sh`) can keep the pipe
+        # open, so EOF may never arrive. Close the transport explicitly so its pipe handles are
+        # released (otherwise: ResourceWarning "unclosed transport" and a closed-pipe error at GC).
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            transport.close()
 
 
 def administrator_argv(script):

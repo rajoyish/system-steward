@@ -263,9 +263,10 @@ class WindowsCaffeinateTests(unittest.TestCase):
 
     def test_detached_launch_keeps_paths_out_of_powershell_source(self):
         hostile = [r"C:\it's\py.exe", "helper.py", "-i"]
-        with patch("keep_awake.subprocess.run") as run:
+        from platforms import windows as win
+        with patch("subprocess.run") as run:
             run.return_value = subprocess.CompletedProcess([], 0, stdout="4321\n", stderr="")
-            self.assertEqual(keep_awake.spawn_detached_windows(hostile, Path(r"C:\O'Brien")), 4321)
+            self.assertEqual(win.spawn_detached(hostile, Path(r"C:\O'Brien")), 4321)
         argv, kwargs = run.call_args.args[0], run.call_args.kwargs
         self.assertNotIn("it's", " ".join(argv))
         self.assertNotIn("Brien", " ".join(argv))

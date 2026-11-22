@@ -105,25 +105,6 @@ def stop_hint():
     return "./system-steward --stop-awake"
 
 
-def spawn_detached_windows(cmd, cwd):
-    """Start ``cmd`` through WMI so it is outside the terminal's job object and survives it closing.
-
-    The command line and folder travel in environment variables, never inside the script text,
-    so paths containing quotes cannot change the PowerShell that runs.
-    """
-    script = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
-              "@{CommandLine = $env:SS_AWAKE_CMDLINE; CurrentDirectory = $env:SS_AWAKE_CWD}; "
-              "if ($r.ReturnValue -eq 0) { $r.ProcessId } else { exit 1 }")
-    env = {**os.environ, "SS_AWAKE_CMDLINE": subprocess.list2cmdline(cmd), "SS_AWAKE_CWD": str(cwd)}
-    try:
-        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                                env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    output = result.stdout.strip()
-    return int(output) if result.returncode == 0 and output.isdigit() else None
-
-
 class Launcher:
     """How a reviewed plan becomes processes on this OS.
 
@@ -146,7 +127,8 @@ class Launcher:
 
     def detached(self, argv, cwd):
         if sys.platform == "win32":
-            pid = spawn_detached_windows(argv, cwd)
+            from platforms.windows import spawn_detached
+            pid = spawn_detached(argv, cwd)
             if pid is not None:
                 return pid, None
         # Launch detached so closing the terminal does not end Keep Awake.

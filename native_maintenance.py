@@ -152,45 +152,12 @@ RECYCLE_BIN = "Recycle Bin"
 
 
 def recycle_path(path):
-    """Send one reviewed path to the Windows Recycle Bin (restorable from Explorer).
-
-    Only local fixed drives are accepted: on network, removable or RAM drives the shell would
-    silently delete permanently instead of recycling. FOF_WANTNUKEWARNING is a second guard that
-    asks before any permanent deletion the shell decides on anyway.
-    """
-    import ctypes
-    from ctypes import wintypes
-
+    """Send one reviewed path to the Windows Recycle Bin (see platforms.windows.recycle)."""
     path = Path(path)
     if not path.is_absolute() or any(c in str(path) for c in "*?"):
         raise ValueError(f"Refusing an unexpected Recycle Bin path: {path}")
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.GetDriveTypeW.argtypes = (wintypes.LPCWSTR,)
-    kernel32.GetDriveTypeW.restype = wintypes.UINT
-    DRIVE_FIXED = 3
-    if kernel32.GetDriveTypeW(path.anchor) != DRIVE_FIXED:
-        raise ValueError(f"The Recycle Bin is unavailable on {path.anchor}; nothing was moved")
-
-    class SHFILEOPSTRUCTW(ctypes.Structure):
-        if ctypes.sizeof(ctypes.c_void_p) == 4:
-            _pack_ = 1  # shellapi.h packs this structure on 32-bit Windows.
-        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
-                    ("pTo", wintypes.LPCWSTR), ("fFlags", wintypes.WORD), ("fAnyOperationsAborted", wintypes.BOOL),
-                    ("hNameMappings", wintypes.LPVOID), ("lpszProgressTitle", wintypes.LPCWSTR)]
-
-    FO_DELETE = 3
-    FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI, FOF_WANTNUKEWARNING = 0x4, 0x10, 0x40, 0x400, 0x4000
-    shell32 = ctypes.WinDLL("shell32")
-    shell32.SHFileOperationW.argtypes = (ctypes.POINTER(SHFILEOPSTRUCTW),)
-    shell32.SHFileOperationW.restype = ctypes.c_int
-    operation = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(path) + "\0",  # list is double-NUL terminated
-                                fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI | FOF_WANTNUKEWARNING)
-    result = shell32.SHFileOperationW(ctypes.byref(operation))
-    if result or operation.fAnyOperationsAborted:
-        raise OSError(f"Could not move {path} to the Recycle Bin (shell error {result:#x})")
-    if os.path.lexists(path):
-        raise OSError(f"{path} is still present after moving it to the Recycle Bin")
-
+    from platforms.windows import recycle
+    recycle(path)
 
 def trash_group(group, home=None, moved=None, backend="auto"):
     """Only move the reviewed targets, refusing replacements and redirected paths.

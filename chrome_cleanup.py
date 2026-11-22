@@ -33,8 +33,8 @@ PROFILE_TARGETS = frozenset(SITE_DIRS + CACHE_DIRS + tuple(
 
 def windows_process_names():
     """Running executable names via one native Toolhelp snapshot (milliseconds, no PowerShell)."""
-    import winproc
-    return winproc.process_names()
+    from platforms.windows import process_names
+    return process_names()
 
 
 def chrome_running():

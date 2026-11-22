@@ -66,7 +66,7 @@ class WindowsMetricTests(unittest.TestCase):
         self.assertEqual(parse_netstat_windows(sample_output), {"Ethernet/Wi-Fi": (1048576, 524288)})
 
     def test_top_processes_uses_cpu_share_between_samples(self):
-        import winproc
+        from platforms import windows as winproc
         before = {(10, 1): ("busy.exe", 0, 100), (20, 1): ("idle.exe", 0, 100), (30, 1): ("reused.exe", 5_000_000, 100)}
         after = {(10, 1): ("busy.exe", 2 * 10_000_000, 400), (20, 1): ("idle.exe", 0, 100),
                  (30, 2): ("new-owner.exe", 9 * 10_000_000, 100)}  # same PID, different process
@@ -78,7 +78,8 @@ class WindowsMetricTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "native Windows APIs")
     def test_native_process_and_network_readings(self):
-        import ctypes, os, winproc
+        import ctypes, os
+        from platforms import windows as winproc
         self.assertEqual(ctypes.sizeof(winproc.MIB_IF_ROW2), 1352)  # netioapi.h layout guard
         self.assertEqual(winproc.MIB_IF_TABLE2.Table.offset, 8)
         names = winproc.process_names()

@@ -1,173 +1,30 @@
-"""Read-only macOS and Windows resource sampling using native system APIs and bundled tools."""
-import ctypes
+"""Read-only macOS and Windows resource sampling using native system APIs and bundled tools.
+
+The OS calls themselves live in platforms.windows / platforms.darwin.
+"""
 import datetime
-import functools
 import os
 from pathlib import Path
-import platform
 import re
 import shutil
 import subprocess
 import sys
 import time
 
-
-@functools.cache
-def _libsystem():
-    """Load and prototype libSystem once per process instead of on every 5 s sample."""
-    lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-    lib.mach_host_self.restype = ctypes.c_uint
-    lib.host_statistics.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
-    lib.host_statistics.restype = ctypes.c_int
-    lib.mach_port_deallocate.argtypes = [ctypes.c_uint, ctypes.c_uint]
-    lib.mach_port_deallocate.restype = ctypes.c_int
-    lib.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
-    lib.sysctlbyname.restype = ctypes.c_int
-    return lib
+from platforms.darwin import Host as MacHost
 
 
-@functools.cache
-def _kernel32():
-    # use_last_error=True makes ctypes.get_last_error() report the real Win32 error code.
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    # The default c_int restype truncates the 64-bit tick count (negative uptime after ~24.8 days).
-    kernel32.GetTickCount64.restype = ctypes.c_uint64
-    return kernel32
+def WindowsHost():
+    """Windows metrics host (platforms.windows.Host); OSError elsewhere, like MacHost off macOS."""
+    if sys.platform != "win32":
+        raise OSError("Live system metrics require Windows")
+    from platforms.windows import Host
+    return Host()
 
 
-class MEMORYSTATUSEX(ctypes.Structure):
-    _fields_ = [
-        ("dwLength", ctypes.c_ulong),
-        ("dwMemoryLoad", ctypes.c_ulong),
-        ("ullTotalPhys", ctypes.c_uint64),
-        ("ullAvailPhys", ctypes.c_uint64),
-        ("ullTotalPageFile", ctypes.c_uint64),
-        ("ullAvailPageFile", ctypes.c_uint64),
-        ("ullTotalVirtual", ctypes.c_uint64),
-        ("ullAvailVirtual", ctypes.c_uint64),
-        ("sullAvailExtendedVirtual", ctypes.c_uint64),
-    ]
-
-
-class SYSTEM_POWER_STATUS(ctypes.Structure):
-    _fields_ = [
-        ("ACLineStatus", ctypes.c_byte),
-        ("BatteryFlag", ctypes.c_byte),
-        ("BatteryLifePercent", ctypes.c_ubyte),
-        ("SystemStatusFlag", ctypes.c_byte),
-        ("BatteryLifeTime", ctypes.c_ulong),
-        ("BatteryFullLifeTime", ctypes.c_ulong),
-    ]
-
-
-class MacHost:
-    """Darwin Mach host_statistics ABI from the macOS SDK's mach/host_info.h."""
-    def __init__(self):
-        if sys.platform != "darwin":
-            raise OSError("Live system metrics require macOS")
-        self.lib = _libsystem()
-
-    def sysctl(self, name):
-        size = ctypes.c_size_t()
-        if self.lib.sysctlbyname(name.encode(), None, ctypes.byref(size), None, 0):
-            raise OSError(ctypes.get_errno(), f"Cannot read {name}")
-        result = ctypes.create_string_buffer(size.value)
-        if self.lib.sysctlbyname(name.encode(), result, ctypes.byref(size), None, 0):
-            raise OSError(ctypes.get_errno(), f"Cannot read {name}")
-        return result.raw[:size.value]
-
-    def integer(self, name):
-        return int.from_bytes(self.sysctl(name), sys.byteorder)
-
-    def text(self, name):
-        return self.sysctl(name).rstrip(b"\0").decode(errors="replace")
-
-    def cpu_ticks(self):
-        # CPU_STATE_USER, SYSTEM, IDLE, NICE; natural_t is uint32 on Darwin.
-        ticks = (ctypes.c_uint * 4)()
-        count = ctypes.c_uint(4)
-        host = self.lib.mach_host_self()
-        try:
-            result = self.lib.host_statistics(host, 3, ticks, ctypes.byref(count))
-            if result or count.value < 4:
-                raise OSError(f"CPU statistics unavailable (Mach error {result})")
-            return tuple(ticks)
-        finally:
-            task = ctypes.c_uint.in_dll(self.lib, "mach_task_self_").value
-            self.lib.mach_port_deallocate(task, host)
-
-
-class WindowsHost:
-    """Windows system resource sampling using Win32 API and standard tools."""
-    def __init__(self):
-        if sys.platform != "win32":
-            raise OSError("Live system metrics require Windows")
-        self.kernel32 = _kernel32()
-
-    def cpu_ticks(self):
-        idle = ctypes.c_uint64()
-        kernel = ctypes.c_uint64()
-        user = ctypes.c_uint64()
-        if not self.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
-            raise OSError(ctypes.get_last_error(), "GetSystemTimes failed")
-        return (idle.value, kernel.value, user.value)
-
-    def memory_stats(self):
-        stat = MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        if not self.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            raise OSError(ctypes.get_last_error(), "GlobalMemoryStatusEx failed")
-        used = stat.ullTotalPhys - stat.ullAvailPhys
-        used_percent = (used / stat.ullTotalPhys * 100) if stat.ullTotalPhys else 0.0
-        return {
-            "total": stat.ullTotalPhys,
-            "used": used,
-            "used_percent": used_percent,
-            "compressed": 0,
-            "cached": stat.ullAvailPhys,
-            "definition": "Physical RAM in use; excludes available standby cache."
-        }
-
-    def hardware_info(self, total_ram):
-        cpu_name = platform.processor()
-        model = "Windows PC"
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
-                cpu_name = winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS") as k:
-                model = winreg.QueryValueEx(k, "SystemProductName")[0].strip()
-        except OSError:
-            pass
-        os_ver = f"Windows {platform.version()} ({platform.release()})"
-        return {
-            "model": model,
-            "cpu_model": cpu_name,
-            "os_version": os_ver,
-            "total_ram": total_ram,
-        }
-
-    def uptime_seconds(self):
-        ms = self.kernel32.GetTickCount64()
-        return int(ms // 1000)
-
-    def power_status(self):
-        s = SYSTEM_POWER_STATUS()
-        if not self.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
-            return []
-        if s.BatteryFlag & 128 or s.BatteryLifePercent == 255:
-            return []
-        percent = int(s.BatteryLifePercent)
-        if s.BatteryFlag & 8 or (s.ACLineStatus == 1 and percent < 100):
-            status = "charging"
-        elif s.ACLineStatus == 1:
-            status = "AC Power"
-        else:
-            status = "discharging"
-        time_left = ""
-        if s.BatteryLifeTime != 0xFFFFFFFF and s.BatteryLifeTime > 0:
-            time_left = f"{s.BatteryLifeTime // 3600}h {s.BatteryLifeTime % 3600 // 60:02d}m remaining"
-        return [{"percent": percent, "status": status, "time_left": time_left}]
+def windows_drives():
+    from platforms.windows import drives
+    return drives()
 
 
 def command(argv, timeout=5):
@@ -194,28 +51,6 @@ def windows_cpu_usage(before, after):
     if total_sys <= 0:
         return 0.0
     return max(0.0, min(100.0, (busy / total_sys) * 100.0))
-
-
-def windows_drives():
-    drives = []
-    bitmask = ctypes.windll.kernel32.GetLogicalDrives()
-    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
-        if bitmask & 1:
-            drive_path = f"{letter}:\\"
-            dtype = ctypes.windll.kernel32.GetDriveTypeW(drive_path)
-            if dtype in (2, 3, 4):
-                try:
-                    usage = shutil.disk_usage(drive_path)
-                    drives.append({
-                        "mount": drive_path,
-                        "used": usage.used,
-                        "total": usage.total,
-                        "used_percent": (usage.used / usage.total * 100) if usage.total else 0.0
-                    })
-                except OSError:
-                    pass
-        bitmask >>= 1
-    return drives
 
 
 def parse_vm_stats(output, total):
@@ -309,7 +144,7 @@ class SystemSampler:
         self.platform = platform or sys.platform
         self.previous_network = None
         self.previous_network_time = None
-        self.previous_processes = None  # (monotonic time, winproc.usage_snapshot())
+        self.previous_processes = None  # (monotonic time, windows.usage_snapshot())
         self.hardware = None
 
     def sample(self):
@@ -328,10 +163,10 @@ class SystemSampler:
         if self.platform == "win32":
             host = attempt("System APIs", WindowsHost)
             if host:
-                import winproc
+                from platforms import windows
                 if self.previous_processes is None:
                     # First sample: measure process CPU across the same short window as system CPU.
-                    snapshot = attempt("Processes", winproc.usage_snapshot)
+                    snapshot = attempt("Processes", windows.usage_snapshot)
                     self.previous_processes = (time.monotonic(), snapshot) if snapshot is not None else None
 
                 def cpu():
@@ -353,7 +188,7 @@ class SystemSampler:
                 data["disks"] = attempt("Disks", windows_drives) or []
                 def network():
                     try:
-                        counters = winproc.interface_counters()
+                        counters = windows.interface_counters()
                     except OSError:
                         counters = parse_netstat_windows(command(["netstat", "-e"]))
                     now = time.monotonic()
@@ -366,12 +201,12 @@ class SystemSampler:
                 def processes():
                     # CPU share between this sample and the previous one (percent of total capacity),
                     # not cumulative CPU seconds since each process started.
-                    now, snapshot = time.monotonic(), winproc.usage_snapshot()
+                    now, snapshot = time.monotonic(), windows.usage_snapshot()
                     previous = self.previous_processes
                     self.previous_processes = (now, snapshot)
                     if previous is None:
                         return []
-                    return winproc.top_processes(previous[1], snapshot, now - previous[0], total_ram, os.cpu_count())
+                    return windows.top_processes(previous[1], snapshot, now - previous[0], total_ram, os.cpu_count())
                 data["top_processes"] = attempt("Processes", processes) or []
                 data["unavailable"]["GPU utilization / temperature"] = "Not exposed by the supported public sampling interfaces; no private sensor tools are used."
                 data["health_score"], data["health_score_msg"] = resource_score(data)

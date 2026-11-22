@@ -224,32 +224,20 @@ CHECK_EVERY = 64  # directories between cancellation / deadline checks
 
 
 def windows_cluster_size(path):
-    """Allocation unit of the volume holding ``path`` (4 KiB fallback)."""
-    try:
-        import ctypes
-        from ctypes import wintypes
-        sectors, sector_bytes, free, total = (wintypes.DWORD() for _ in range(4))
-        if ctypes.windll.kernel32.GetDiskFreeSpaceW(Path(path).anchor or None, ctypes.byref(sectors),
-                                                    ctypes.byref(sector_bytes), ctypes.byref(free), ctypes.byref(total)):
-            return max(512, sectors.value * sector_bytes.value)
-    except (OSError, AttributeError, ValueError):
-        pass
-    return 4096
+    """Allocation unit of the volume holding ``path`` (4 KiB off Windows)."""
+    if sys.platform != "win32":
+        return 4096
+    from platforms.windows import cluster_size
+    return cluster_size(path)
 
 
 def windows_on_disk_size(path, fallback):
+    if sys.platform != "win32":
+        return fallback
+    from platforms.windows import on_disk_size
     try:
-        import ctypes
-        from ctypes import wintypes
-        get_size = ctypes.windll.kernel32.GetCompressedFileSizeW
-        get_size.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD))
-        get_size.restype = wintypes.DWORD
-        high = wintypes.DWORD()
-        low = get_size(path, ctypes.byref(high))
-        if low == 0xFFFFFFFF and ctypes.GetLastError():
-            return fallback
-        return (high.value << 32) | low
-    except (OSError, AttributeError):
+        return on_disk_size(path, fallback)
+    except OSError:
         return fallback
 
 

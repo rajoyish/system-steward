@@ -3,32 +3,19 @@
 Usage (caffeinate-compatible subset):
     windows_caffeinate.py [-idmsu] [-t SECONDS] [-w PID] [-b] [--] [command [args...]]
     windows_caffeinate.py --status | --stop
+
+All Win32 calls live in platforms.windows. subprocess / keep_awake are imported only by the code
+paths that need them, so a background session that just holds the sleep request stays minimal.
 """
-import ctypes
-from ctypes import wintypes
 import os
 import sys
 import time
 
 import awake_state
+from platforms import windows as win
 
-# subprocess / keep_awake are imported only by the code paths that need them, so a background
-# session that just holds the sleep assertion stays a minimal interpreter.
-
-ES_CONTINUOUS = 0x80000000
-ES_SYSTEM_REQUIRED = 0x00000001
-ES_DISPLAY_REQUIRED = 0x00000002
-ES_AWAYMODE_REQUIRED = 0x00000040
-
-DETACHED_PROCESS = 0x00000008
-CREATE_NO_WINDOW = 0x08000000
-
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-PROCESS_VM_READ = 0x0010
-SYNCHRONIZE = 0x00100000
-WAIT_TIMEOUT = 0x00000102
-JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
-JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
+DETACHED_PROCESS = win.DETACHED_PROCESS
+CREATE_NO_WINDOW = win.CREATE_NO_WINDOW
 
 # caffeinate assertion letters; only "d" changes behavior here.
 FLAG_LETTERS = frozenset("idmsu")
@@ -38,108 +25,17 @@ def is_flag_cluster(arg):
     return len(arg) > 1 and arg[0] == "-" and set(arg[1:]) <= FLAG_LETTERS
 
 
-class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
-    _fields_ = [
-        ("cb", wintypes.DWORD),
-        ("PageFaultCount", wintypes.DWORD),
-        ("PeakWorkingSetSize", ctypes.c_size_t),
-        ("WorkingSetSize", ctypes.c_size_t),
-        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
-        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-        ("PagefileUsage", ctypes.c_size_t),
-        ("PeakPagefileUsage", ctypes.c_size_t),
-        ("PrivateUsage", ctypes.c_size_t),
-    ]
-
-
-class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [
-        ("PerProcessUserTimeLimit", ctypes.c_int64),
-        ("PerJobUserTimeLimit", ctypes.c_int64),
-        ("LimitFlags", wintypes.DWORD),
-        ("MinimumWorkingSetSize", ctypes.c_size_t),
-        ("MaximumWorkingSetSize", ctypes.c_size_t),
-        ("ActiveProcessLimit", wintypes.DWORD),
-        ("Affinity", ctypes.c_size_t),
-        ("PriorityClass", wintypes.DWORD),
-        ("SchedulingClass", wintypes.DWORD),
-    ]
-
-
-class IO_COUNTERS(ctypes.Structure):
-    _fields_ = [(name, ctypes.c_uint64) for name in (
-        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-
-class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-    _fields_ = [
-        ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
-        ("IoInfo", IO_COUNTERS),
-        ("ProcessMemoryLimit", ctypes.c_size_t),
-        ("JobMemoryLimit", ctypes.c_size_t),
-        ("PeakProcessMemoryUsed", ctypes.c_size_t),
-        ("PeakJobMemoryUsed", ctypes.c_size_t),
-    ]
-
-
-if sys.platform == "win32":
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    psapi = ctypes.WinDLL("psapi", use_last_error=True)
-    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.SetThreadExecutionState.argtypes = (wintypes.DWORD,)
-    kernel32.SetThreadExecutionState.restype = wintypes.DWORD
-    kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
-    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-    kernel32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
-    kernel32.SetInformationJobObject.restype = wintypes.BOOL
-    kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-    kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    psapi.GetProcessMemoryInfo.argtypes = (wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX), wintypes.DWORD)
-    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-
-
 def get_process_memory_mb(pid):
-    """Private (committed) memory of ``pid`` in MiB: the honest footprint, unlike the trimmable working set."""
-    try:
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, False, int(pid))
-    except (NameError, TypeError, ValueError, OSError):
-        return None
-    if not handle:
-        return None
-    try:
-        counters = PROCESS_MEMORY_COUNTERS_EX()
-        counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
-        if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
-            return round(counters.PrivateUsage / (1024 * 1024), 1)
-        return None
-    finally:
-        kernel32.CloseHandle(handle)
+    """Private (committed) memory of ``pid`` in MiB."""
+    return win.private_memory_mb(pid)
 
 
 def set_awake_state(display=False):
-    flags = ES_CONTINUOUS | ES_SYSTEM_REQUIRED
-    if display:
-        flags |= ES_DISPLAY_REQUIRED
-    try:
-        kernel32.SetThreadExecutionState(flags)
-    except (NameError, OSError):
-        pass
+    win.set_execution_state(display=display)
 
 
 def clear_awake_state():
-    try:
-        kernel32.SetThreadExecutionState(ES_CONTINUOUS)
-    except (NameError, OSError):
-        pass
+    win.set_execution_state(clear=True)
 
 
 def is_pid_alive(pid):
@@ -147,45 +43,16 @@ def is_pid_alive(pid):
 
 
 def wait_for_pid(pid, duration=None):
-    """Block until ``pid`` exits or ``duration`` seconds pass, without polling process state.
-
-    Waits on the process handle in 1 s slices only so Ctrl+C stays responsive in a console.
-    """
-    handle = kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
-    if not handle:
-        return
-    deadline = None if duration is None else time.monotonic() + duration
-    try:
-        while True:
-            slice_ms = 1000 if deadline is None else max(0, min(1000, int((deadline - time.monotonic()) * 1000)))
-            if kernel32.WaitForSingleObject(handle, slice_ms) != WAIT_TIMEOUT:
-                return  # process exited (or the wait failed)
-            if deadline is not None and time.monotonic() >= deadline:
-                return
-    finally:
-        kernel32.CloseHandle(handle)
+    win.wait_for_process(pid, duration)
 
 
 def kill_on_close_job():
-    """Put this helper in a job that kills every member when the helper dies.
-
-    Children spawned afterwards inherit the job, so terminating the helper (Stop session, app exit,
-    TerminateProcess) also ends a wrapped command and its descendants instead of orphaning them.
-    Returns the job handle, which must stay open for the helper's lifetime, or None on failure.
-    """
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        return None
-    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if (kernel32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
-                                         ctypes.byref(info), ctypes.sizeof(info))
-            and kernel32.AssignProcessToJobObject(job, kernel32.GetCurrentProcess())):
-        return job
-    print(f"windows_caffeinate: job object unavailable (error {ctypes.get_last_error()}); "
-          "a wrapped command may outlive this helper if it is terminated.", file=sys.stderr)
-    kernel32.CloseHandle(job)
-    return None
+    """Kill-on-close job for this helper so a wrapped command never outlives it (see platforms.windows)."""
+    job, error = win.kill_on_close_job()
+    if job is None:
+        print(f"windows_caffeinate: job object unavailable (error {error}); "
+              "a wrapped command may outlive this helper if it is terminated.", file=sys.stderr)
+    return job
 
 
 def parse_args(args):
@@ -267,7 +134,7 @@ def stop_session():
 def launch_background(options):
     """Start a detached copy of this helper. The launcher is the only writer of the session record."""
     import subprocess
-    from keep_awake import helper_python, spawn_detached_windows
+    from keep_awake import helper_python
 
     existing = awake_state.read_owned()
     if existing:
@@ -277,7 +144,7 @@ def launch_background(options):
         return 0
     cmd = [helper_python(windowless=True), os.path.abspath(__file__), *options["forward"], "--daemon"]
     # WMI creation keeps the session outside the terminal's job, so closing the terminal cannot end it.
-    pid = spawn_detached_windows(cmd, os.getcwd())
+    pid = win.spawn_detached(cmd, os.getcwd())
     if pid is None:
         pid = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True).pid
