@@ -2,14 +2,19 @@
 import asyncio
 from dataclasses import replace
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
 
 import native_maintenance
 import system_actions
-from system_status import cpu_usage, network_rates, parse_battery, parse_netstat, parse_vm_stats, resource_score, SystemSampler
+from system_status import (
+    cpu_usage, network_rates, parse_battery, parse_netstat, parse_netstat_windows,
+    parse_vm_stats, resource_score, SystemSampler, windows_cpu_usage, windows_drives, WindowsHost
+)
 
 
 class MetricTests(unittest.TestCase):
@@ -52,6 +57,31 @@ class MetricTests(unittest.TestCase):
         self.assertIn('Network', sample['unavailable'])
 
 
+class WindowsMetricTests(unittest.TestCase):
+    def test_windows_cpu_usage_and_netstat_parsing(self):
+        # In Windows: (idle, kernel, user); total = kernel + user; busy = (kernel - idle) + user
+        self.assertEqual(windows_cpu_usage((0, 100, 0), (100, 200, 0)), 0.0)  # all idle
+        self.assertEqual(windows_cpu_usage((0, 100, 100), (0, 150, 150)), 100.0)  # 0 idle
+        sample_output = "Interface Statistics\n\nBytes                    1048576       524288\n"
+        self.assertEqual(parse_netstat_windows(sample_output), {"Ethernet/Wi-Fi": (1048576, 524288)})
+
+    def test_windows_live_host_and_drives(self):
+        if sys.platform != "win32":
+            return
+        host = WindowsHost()
+        ticks = host.cpu_ticks()
+        self.assertEqual(len(ticks), 3)
+        mem = host.memory_stats()
+        self.assertGreater(mem["total"], 0)
+        self.assertGreater(mem["used"], 0)
+        self.assertGreaterEqual(mem["used_percent"], 0)
+        self.assertLessEqual(mem["used_percent"], 100)
+        uptime = host.uptime_seconds()
+        self.assertGreaterEqual(uptime, 0)
+        drives = windows_drives()
+        self.assertTrue(any(d["mount"].startswith("C:") for d in drives))
+
+
 class TouchIDPlanTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -92,7 +122,8 @@ class TouchIDPlanTests(unittest.TestCase):
     def test_generated_script_parses_and_uses_atomic_backup_and_snapshot_checks(self):
         plan = system_actions.plan_touchid(True, self.directory)
         script = system_actions.touchid_script(plan)
-        parsed = subprocess.run(['/bin/sh', '-n'], input=script, text=True, capture_output=True)
+        sh_cmd = shutil.which('sh') or '/bin/sh'
+        parsed = subprocess.run([sh_cmd, '-n'], input=script, text=True, capture_output=True)
         self.assertEqual(parsed.returncode, 0, parsed.stderr)
         self.assertIn(plan.sudo_digest, script)
         self.assertIn('/bin/mv -f', script)
@@ -113,13 +144,14 @@ class TouchIDPlanTests(unittest.TestCase):
         # Exercise the transaction entirely as the test user in a temporary
         # directory. Root ownership is the only production step omitted.
         script = script.replace('/usr/sbin/chown root:wheel "$pam_tmp"', '/usr/bin/true')
-        result = subprocess.run(['/bin/sh'], input=script, text=True, capture_output=True)
+        sh_cmd = shutil.which('sh') or '/bin/sh'
+        result = subprocess.run([sh_cmd], input=script, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(local.read_bytes(), plan.after)
         backups = list(self.directory.glob('sudo_local.system-steward-backup-*'))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), original)
-        stale = subprocess.run(['/bin/sh'], input=script, text=True, capture_output=True)
+        stale = subprocess.run([sh_cmd], input=script, text=True, capture_output=True)
         self.assertNotEqual(stale.returncode, 0)
         self.assertIn('changed since review', stale.stderr)
         self.assertEqual(local.read_bytes(), plan.after)

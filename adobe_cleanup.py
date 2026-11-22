@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -16,9 +17,9 @@ PROTECTED_NAMES = frozenset(("presets", "plugins", "plug-ins", "scripts", "prefe
 DISK_CACHE = re.compile(
     r"(?:(?:.*[ _-])?disk[ _-]*cache|caches?|temp(?:orary)?(?:[ _-]*(?:cache|files|items))?)(?:[ ._-].*)?\Z", re.I)
 ADOBE_PROCESS = re.compile(
-    r"(?:^|/)(?:Adobe[^/]*|Creative Cloud[^/]*|Lightroom[^/]*|Photoshop[^/]*|"
-    r"Illustrator[^/]*|InDesign[^/]*|After Effects[^/]*|Premiere[^/]*|Audition[^/]*|"
-    r"Media Encoder[^/]*|Bridge|CCXProcess|Core ?Sync|CCLibrary)(?:/|$)", re.I)
+    r"(?:^|[/\\])(?:Adobe[^/\\]*|Creative Cloud[^/\\]*|Lightroom[^/\\]*|Photoshop[^/\\]*|"
+    r"Illustrator[^/\\]*|InDesign[^/\\]*|After Effects[^/\\]*|Premiere[^/\\]*|Audition[^/\\]*|"
+    r"Media Encoder[^/\\]*|Bridge|CCXProcess|Core ?Sync|CCLibrary)(?:[/\\]|\.exe|$)", re.I)
 
 # Short lines keep the in-app guide readable in a 68-column terminal.
 PURGE_GUIDE = (
@@ -71,8 +72,12 @@ def protected_tree(path):
 
 
 def adobe_running():
+    if sys.platform == "win32":
+        cmd = ["pwsh", "-NoProfile", "-Command", "Get-Process | Select-Object -ExpandProperty ProcessName -ErrorAction SilentlyContinue"]
+    else:
+        cmd = ["ps", "-axo", "comm="]
     try:
-        result = subprocess.run(["ps", "-axo", "comm="], capture_output=True,
+        result = subprocess.run(cmd, capture_output=True,
                                 text=True, errors="replace", timeout=5)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OSError("Cannot verify that Adobe apps are closed; cleanup was blocked") from exc
@@ -90,6 +95,8 @@ def approved_cache(library, path):
         return False
     if len(parts) == 4 and parts[:3] == ("Application Support", "Adobe", "Common"):
         return parts[3] in COMMON_CACHES
+    if len(parts) >= 2 and parts[-2] == "Common" and ("Adobe" in parts or (len(parts) >= 3 and parts[-3] == "Adobe")):
+        return parts[-1] in COMMON_CACHES
     if len(parts) == 2 and parts[0] == "Caches":
         return (parts[1] == "Adobe InDesign" or
                 bool(re.fullmatch(r"Adobe Camera Raw(?: \d+)?", parts[1])) or
@@ -98,6 +105,15 @@ def approved_cache(library, path):
         return bool(DISK_CACHE.fullmatch(parts[-1])) or (
             len(parts) >= 4 and parts[2].casefold() in ("lightroom", "lightroom classic")
             and parts[-1].casefold() == "video")
+    if "Adobe" in parts:
+        if bool(DISK_CACHE.fullmatch(parts[-1])):
+            return True
+        if parts[-1] in COMMON_CACHES:
+            return True
+        if parts[-1].casefold() == "video" and any(p.casefold() in ("lightroom", "lightroom classic") for p in parts):
+            return True
+        if parts[-1] in ("InDesign", "Adobe InDesign") or bool(re.fullmatch(r"Adobe Camera Raw(?: \d+)?", parts[-1])):
+            return True
     return False
 
 
@@ -110,16 +126,37 @@ class AdobePlan:
 
 
 def build_plan(home=None):
-    library = (Path(home) if home is not None else Path.home()) / "Library"
-    common = library / "Application Support/Adobe/Common"
-    caches = library / "Caches"
+    if home is not None:
+        home_path = Path(home)
+        library = home_path / "Library"
+        win_appdata = home_path / "AppData/Roaming/Adobe"
+        if win_appdata.is_dir() and not library.is_dir():
+            data_root = home_path
+            common = win_appdata / "Common"
+            caches = home_path / "AppData/Local/Adobe"
+        else:
+            data_root = library
+            common = library / "Application Support/Adobe/Common"
+            caches = library / "Caches"
+    elif sys.platform == "win32":
+        data_root = Path.home()
+        roaming = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming"))
+        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local"))
+        common = roaming / "Adobe/Common"
+        caches = local / "Adobe"
+    else:
+        library = Path.home() / "Library"
+        data_root = library
+        common = library / "Application Support/Adobe/Common"
+        caches = library / "Caches"
+
     candidates = [common / name for name in sorted(COMMON_CACHES)]
     skipped = []
-    if not safe_path(library) or not safe_path(caches) or not safe_path(common):
+    if not safe_path(data_root) or (caches.exists() and not safe_path(caches)) or (common.exists() and not safe_path(common)):
         raise OSError("Adobe cache roots use a symlink; cleanup was blocked")
     if caches.is_dir():
-        candidates.extend(path for path in sorted(caches.iterdir()) if approved_cache(library, path))
-    adobe = caches / "Adobe"
+        candidates.extend(path for path in sorted(caches.iterdir()) if approved_cache(data_root, path))
+    adobe = caches if caches.name == "Adobe" else caches / "Adobe"
     if adobe.is_symlink():
         skipped.append(adobe)
     elif adobe.is_dir():
@@ -131,7 +168,7 @@ def build_plan(home=None):
                 if path.is_symlink() or protected_name(name):
                     skipped.append(path)
                     dirs.remove(name)
-                elif approved_cache(library, path):
+                elif approved_cache(data_root, path):
                     candidates.append(path)
                     dirs.remove(name)
     roots, targets = [], []
@@ -147,7 +184,7 @@ def build_plan(home=None):
                 skipped.append(target)
             else:
                 targets.append(target)
-    return AdobePlan(library, tuple(roots), tuple(targets), tuple(skipped))
+    return AdobePlan(data_root, tuple(roots), tuple(targets), tuple(skipped))
 
 
 def validate_target(plan, path):

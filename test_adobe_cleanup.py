@@ -145,6 +145,26 @@ class AdobeCleanupTests(unittest.TestCase):
         self.assertFalse(plan.targets)
         self.assertFalse(self.job(plan).errors)
 
+    def test_windows_adobe_common_and_local_layout(self):
+        media_cache = self.home / "AppData/Roaming/Adobe/Common/Media Cache Files/video.cfa"
+        disk_cache = self.home / "AppData/Local/Adobe/After Effects/Disk Cache/frame.data"
+        protected_catalog = self.home / "AppData/Roaming/Adobe/Common/Media Cache Files/catalog.lrcat"
+        export_preset = self.home / "AppData/Roaming/Adobe/Common/ExportSettings/preset"
+        for p in (media_cache, disk_cache, protected_catalog, export_preset):
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("fixture")
+        plan = build_plan(self.home)
+        self.assertIn(media_cache, plan.targets)
+        self.assertIn(disk_cache, plan.targets)
+        self.assertNotIn(export_preset, plan.targets)
+        self.assertIn(protected_catalog, plan.skipped)
+        result = self.job(plan)
+        self.assertFalse(result.errors)
+        self.assertFalse(media_cache.exists())
+        self.assertFalse(disk_cache.exists())
+        self.assertTrue(export_preset.exists())
+        self.assertTrue(protected_catalog.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

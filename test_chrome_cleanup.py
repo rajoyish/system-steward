@@ -117,6 +117,24 @@ class ChromeCleanupTests(unittest.TestCase):
         self.assertFalse(plan.targets)
         self.assertFalse(self.run_job(plan).errors)
 
+    def test_windows_chrome_profile_layout(self):
+        win_data = self.home / "AppData/Local/Google/Chrome/User Data"
+        default_cookies = self.put(win_data / "Default/Network/Cookies")
+        default_cache = self.put(win_data / "Default/Cache/Cache_Data/data")
+        default_bookmarks = self.put(win_data / "Default/Bookmarks")
+        shared_cache = self.put(win_data / "ShaderCache/data")
+        plan = build_plan(self.home)
+        self.assertIn("Default", plan.profiles)
+        self.assertIn(default_cookies, plan.targets)
+        self.assertIn(win_data / "Default/Cache", plan.targets)
+        self.assertIn(win_data / "ShaderCache", plan.targets)
+        self.assertNotIn(default_bookmarks, plan.targets)
+        job = self.run_job(plan)
+        self.assertFalse(job.errors)
+        self.assertFalse(default_cookies.exists())
+        self.assertFalse(default_cache.exists())
+        self.assertFalse(shared_cache.exists())
+        self.assertTrue(default_bookmarks.exists())
 
 
 if __name__ == "__main__":

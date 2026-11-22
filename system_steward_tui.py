@@ -608,6 +608,13 @@ class SystemStewardApp(App):
         selected = self.active_path
         entries = [entry for entry in self.scan.entries if (self.group == "All" or entry.group == self.group)
                    and self.search_text.casefold() in (entry.name + " " + entry.path).casefold()]
+        seen_paths = set()
+        deduped = []
+        for entry in entries:
+            if entry.path not in seen_paths:
+                seen_paths.add(entry.path)
+                deduped.append(entry)
+        entries = deduped
         entries.sort(key=(lambda entry: (-entry.size, entry.name.casefold())) if self.by_size else lambda entry: entry.name.casefold())
         self.visible_entries = {entry.path: entry for entry in entries}
         table.clear()

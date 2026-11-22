@@ -1,10 +1,11 @@
-"""Native macOS maintenance discovery and presentation."""
+"""Native macOS and Windows maintenance discovery and presentation."""
 from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import uuid
 
 from system_steward import size_label
@@ -61,7 +62,24 @@ def discover(kind, home=None, project_root=None, cancel=None):
             return []
 
     if kind == "clean":
-        for root, label in ((home / "Library/Caches", "App cache"), (home / "Library/Logs", "App logs"), (home / ".cache", "Developer cache")):
+        clean_roots = []
+        if sys.platform == "win32" and home == Path.home().resolve():
+            local_app = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData/Local"))
+            clean_roots.extend([
+                (local_app / "Temp", "Temporary files"),
+                (local_app / "CrashDumps", "Crash dumps"),
+                (home / ".cache", "Developer cache"),
+            ])
+        clean_roots.extend([
+            (home / "Library/Caches", "App cache"),
+            (home / "Library/Logs", "App logs"),
+            (home / ".cache", "Developer cache"),
+        ])
+        seen_roots = set()
+        for root, label in clean_roots:
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
             for path in items(root):
                 add(f"{label} · {path.name}", [path], "Move this cache or log folder to Trash. Quit the related app first; caches rebuild on next launch.")
     elif kind in ("installer", "purge"):
@@ -90,7 +108,7 @@ def discover(kind, home=None, project_root=None, cancel=None):
                     # Do not descend into applications, projects' dependency stores, or hidden data.
                     dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ARTIFACTS and not d.endswith(".app")]
                     for name in sorted(files):
-                        if Path(name).suffix.lower() in {".dmg", ".pkg", ".iso"}:
+                        if Path(name).suffix.lower() in {".dmg", ".pkg", ".iso", ".exe", ".msi"}:
                             add(name, [parent / name], "Move this downloaded installer to Trash. Installed applications are kept.")
     elif kind == "uninstall":
         roots = [home / "Applications"]
@@ -102,11 +120,20 @@ def discover(kind, home=None, project_root=None, cancel=None):
                     continue
                 targets = [path]
                 try:
-                    # macOS plutil supports XML and binary plists, including on Python
-                    # installations whose optional expat module is unavailable.
-                    result = subprocess.run(["/usr/bin/plutil", "-convert", "json", "-o", "-", str(path / "Contents/Info.plist")],
-                        capture_output=True, text=True, timeout=5, check=True)
-                    bundle = json.loads(result.stdout).get("CFBundleIdentifier", "")
+                    bundle = ""
+                    plist_path = path / "Contents/Info.plist"
+                    if plist_path.is_file():
+                        try:
+                            import plistlib
+                            with open(plist_path, "rb") as f:
+                                data = plistlib.load(f)
+                                bundle = data.get("CFBundleIdentifier", "")
+                        except Exception:
+                            pass
+                    if not bundle and sys.platform == "darwin":
+                        result = subprocess.run(["/usr/bin/plutil", "-convert", "json", "-o", "-", str(plist_path)],
+                            capture_output=True, text=True, timeout=5, check=True)
+                        bundle = json.loads(result.stdout).get("CFBundleIdentifier", "")
                     if bundle and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]+", bundle):
                         for base, name in (("Caches", bundle), ("Preferences", bundle + ".plist"), ("Application Support", bundle), ("Saved Application State", bundle + ".savedState"), ("Logs", bundle)):
                             residual = home / "Library" / base / name

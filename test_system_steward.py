@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from system_steward import Entry, Scan, children
+from system_steward import Entry, Scan, children, du_command, pretty_path, audit_entries
 
 
 class ScannerTests(unittest.TestCase):
@@ -18,14 +18,18 @@ class ScannerTests(unittest.TestCase):
             root = Path(folder)
             (root / "directory with spaces").mkdir()
             (root / "directory with spaces" / "data").write_bytes(b"x" * 65536)
-            (root / "link").symlink_to(root / "directory with spaces", target_is_directory=True)
+            try:
+                (root / "link").symlink_to(root / "directory with spaces", target_is_directory=True)
+                has_symlink = True
+            except (OSError, NotImplementedError):
+                has_symlink = False
             entries = children(root)
             self.assertEqual([e.name for e in entries], ["directory with spaces"])
             entries.append(Entry("missing", str(root / "absent"), "Projects"))
             scan = Scan(entries)
             try:
                 self.assertTrue(scan.finished.wait(5))
-                expected = int(subprocess.check_output(["du", "-sk", entries[0].path]).split()[0]) * 1024
+                expected = int(subprocess.check_output(du_command(entries[0].path)).split()[0]) * 1024
                 self.assertEqual(entries[0].size, expected)
                 self.assertEqual(entries[0].status, "done")
                 self.assertEqual(entries[1].status, "missing")
@@ -74,23 +78,41 @@ class ScannerTests(unittest.TestCase):
         from app_identity import APP_NAME, AUTHOR
         self.assertEqual(APP_NAME, "System Steward")
         self.assertEqual(AUTHOR, "Rajesh Budhathoki")
-        launcher = Path(__file__).parent.resolve() / "system-steward"
-        result = subprocess.run(["zsh", str(launcher), "--version"], capture_output=True, text=True, timeout=10)
+        if sys.platform == "win32":
+            launcher = Path(__file__).parent.resolve() / "system-steward.ps1"
+            cmd = ["pwsh", "-NoProfile", "-File", str(launcher), "--version"]
+        else:
+            launcher = Path(__file__).parent.resolve() / "system-steward"
+            cmd = ["zsh", str(launcher), "--version"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("System Steward", result.stdout)
         self.assertIn("Rajesh Budhathoki", result.stdout)
 
-    def test_zsh_launcher_from_another_working_directory(self):
-        launcher = Path(__file__).parent.resolve() / "system-steward"
+    def test_launcher_from_another_working_directory(self):
+        if sys.platform == "win32":
+            launcher = Path(__file__).parent.resolve() / "system-steward.ps1"
+            cmd_prefix = ["pwsh", "-NoProfile", "-File", str(launcher)]
+        else:
+            launcher = Path(__file__).parent.resolve() / "system-steward"
+            cmd_prefix = ["zsh", str(launcher)]
         with tempfile.TemporaryDirectory(prefix="storage test ") as folder:
             (Path(folder) / "example").write_bytes(b"example")
-            result = subprocess.run(["zsh", str(launcher), "--json", folder],
+            result = subprocess.run([*cmd_prefix, "--json", folder],
                                     cwd=folder, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             data = json.loads(result.stdout)
             self.assertEqual(data["scope"], str(Path(folder).resolve()))
             self.assertEqual(data["entries"][0]["name"], "example")
             self.assertEqual(data["entries"][0]["status"], "done")
+
+    def test_pretty_path_and_audit_entries(self):
+        home = Path.home()
+        self.assertEqual(pretty_path(home), "~")
+        self.assertEqual(pretty_path(home / "subfolder"), "~/subfolder")
+        entries = audit_entries()
+        self.assertTrue(len(entries) > 0)
+        self.assertTrue(all(isinstance(e, Entry) for e in entries))
 
 
 

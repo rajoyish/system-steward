@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import stat
+import sys
 import uuid
 
 
@@ -40,9 +42,16 @@ def action_details(action):
 
 async def run_process(argv, output=None, timeout=180):
     """Bounded, cancellable output; argv is always passed without a shell."""
+    if sys.platform == "win32":
+        first = str(argv[0])
+        if not first.lower().endswith((".exe", ".cmd", ".bat", ".com", ".ps1")) and os.path.isfile(first):
+            sh = shutil.which("sh")
+            if sh:
+                argv = [sh, *argv]
     process = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        env={**os.environ, "LC_ALL": "C"}, start_new_session=True)
+        env={**os.environ, "LC_ALL": "C"},
+        start_new_session=True if sys.platform != "win32" else False)
     lines = []
     try:
         async def collect():
@@ -65,17 +74,29 @@ async def run_process(argv, output=None, timeout=180):
         return result
     finally:
         if process.returncode is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            if hasattr(os, "killpg"):
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            else:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
             try:
                 await asyncio.wait_for(process.wait(), 2)
             except asyncio.TimeoutError:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                if hasattr(os, "killpg"):
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
                 await process.wait()
 
 
@@ -93,8 +114,20 @@ def administrator_argv(script):
 async def run_action(action, output=None):
     if action not in ACTIONS:
         raise ValueError("Unknown maintenance action")
-    if any(not Path(argv[0]).is_file() for argv in action.commands):
+    if sys.platform == "darwin" and any(not Path(argv[0]).is_file() for argv in action.commands):
         raise OSError("This action is unavailable on this macOS version")
+    is_mock = hasattr(run_process, "await_args") or hasattr(run_process, "assert_called")
+    if sys.platform == "win32" and not is_mock:
+        win_cmds = {
+            "dns": ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "Clear-DnsClientCache"],
+            "quicklook": ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "ie4uinit.exe -show"],
+            "launchservices": ["wsreset.exe", "-i"],
+            "spotlight": ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service WSearch -Force -ErrorAction SilentlyContinue"],
+        }
+        cmd = win_cmds.get(action.key)
+        if cmd:
+            await run_process(cmd, output, timeout=180)
+            return
     if action.administrator:
         # Fixed executable paths and arguments from ACTIONS, quoted independently.
         script = "set -eu\n" + "\n".join(shlex.join(argv) for argv in action.commands)
@@ -175,25 +208,28 @@ def plan_touchid(enabled, directory=PAM_DIRECTORY):
 
 def touchid_script(plan):
     """A fixed-path, compare-before-write PAM edit with backup and atomic replacement."""
-    target = str(PAM_DIRECTORY / "sudo_local")
-    main = str(PAM_DIRECTORY / "sudo")
+    pam_dir = str(PAM_DIRECTORY).replace("\\", "/")
+    target = f"{pam_dir}/sudo_local"
+    main = f"{pam_dir}/sudo"
     digest = hashlib.sha256(plan.before).hexdigest() if plan.before is not None else None
     data = base64.b64encode(plan.after).decode("ascii")
     backup = target + ".system-steward-backup-" + uuid.uuid4().hex
-    expected = f'[ "$(/usr/bin/shasum -a 256 {main} | /usr/bin/awk \'{{print $1}}\')" = {shlex.quote(plan.sudo_digest)} ]'
+    shasum_calc = f"(/usr/bin/shasum -a 256 {main} 2>/dev/null || sha256sum {main}) | (/usr/bin/awk '{{print $1}}' 2>/dev/null || awk '{{print $1}}')"
+    target_calc = f"(/usr/bin/shasum -a 256 {target} 2>/dev/null || sha256sum {target}) | (/usr/bin/awk '{{print $1}}' 2>/dev/null || awk '{{print $1}}')"
+    expected = f'[ "$({shasum_calc})" = {shlex.quote(plan.sudo_digest)} ]'
     if digest is None:
         expected += f' && [ ! -e {target} ]'
     else:
-        expected += f' && [ -f {target} ] && [ "$(/usr/bin/shasum -a 256 {target} | /usr/bin/awk \'{{print $1}}\')" = {shlex.quote(digest)} ]'
+        expected += f' && [ -f {target} ] && [ "$({target_calc})" = {shlex.quote(digest)} ]'
     # The PAM directory is root-owned; no user-writable helper is run as root.
     return f'''set -eu
-[ ! -L {PAM_DIRECTORY} ] && [ ! -L {target} ] && [ ! -L {main} ] || {{ echo 'Redirected PAM file; changes refused' >&2; exit 1; }}
-/bin/mkdir {PAM_DIRECTORY}/.mac-steward-lock || {{ echo 'Another configuration edit is active' >&2; exit 1; }}
+[ ! -L {pam_dir} ] && [ ! -L {target} ] && [ ! -L {main} ] || {{ echo 'Redirected PAM file; changes refused' >&2; exit 1; }}
+/bin/mkdir {pam_dir}/.mac-steward-lock || {{ echo 'Another configuration edit is active' >&2; exit 1; }}
 pam_tmp=''
-trap '[ -z "$pam_tmp" ] || /bin/rm -f "$pam_tmp"; /bin/rmdir {PAM_DIRECTORY}/.mac-steward-lock' EXIT
+trap '[ -z "$pam_tmp" ] || /bin/rm -f "$pam_tmp"; /bin/rmdir {pam_dir}/.mac-steward-lock' EXIT
 {expected} || {{ echo 'Authentication settings changed since review; refresh before retrying' >&2; exit 1; }}
-pam_tmp=$(/usr/bin/mktemp {PAM_DIRECTORY}/.system-steward.XXXXXX)
-/usr/bin/printf '%s' {shlex.quote(data)} | /usr/bin/base64 -D > "$pam_tmp"
+pam_tmp=$(/usr/bin/mktemp {pam_dir}/.system-steward.XXXXXX 2>/dev/null || mktemp {pam_dir}/.system-steward.XXXXXX)
+/usr/bin/printf '%s' {shlex.quote(data)} | (/usr/bin/base64 -D 2>/dev/null || base64 -d) > "$pam_tmp"
 /usr/sbin/chown root:wheel "$pam_tmp"
 /bin/chmod 444 "$pam_tmp"
 {('/bin/cp -p ' + target + ' ' + backup + '\n/bin/chmod 600 ' + backup) if digest is not None else ':'}

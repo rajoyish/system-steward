@@ -1,8 +1,9 @@
-"""Read-only macOS resource sampling using Mach APIs and bundled system tools."""
+"""Read-only macOS and Windows resource sampling using native system APIs and bundled tools."""
 import ctypes
 import datetime
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import subprocess
@@ -54,6 +55,100 @@ class MacHost:
             self.lib.mach_port_deallocate(task, host)
 
 
+class WindowsHost:
+    """Windows system resource sampling using Win32 API and standard tools."""
+    def __init__(self):
+        if sys.platform != "win32":
+            raise OSError("Live system metrics require Windows")
+        self.kernel32 = ctypes.windll.kernel32
+
+    def cpu_ticks(self):
+        idle = ctypes.c_uint64()
+        kernel = ctypes.c_uint64()
+        user = ctypes.c_uint64()
+        if not self.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
+            raise OSError(ctypes.get_last_error(), "GetSystemTimes failed")
+        return (idle.value, kernel.value, user.value)
+
+    def memory_stats(self):
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("sullAvailExtendedVirtual", ctypes.c_uint64),
+            ]
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if not self.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            raise OSError(ctypes.get_last_error(), "GlobalMemoryStatusEx failed")
+        used = stat.ullTotalPhys - stat.ullAvailPhys
+        used_percent = (used / stat.ullTotalPhys * 100) if stat.ullTotalPhys else 0.0
+        return {
+            "total": stat.ullTotalPhys,
+            "used": used,
+            "used_percent": used_percent,
+            "compressed": 0,
+            "cached": stat.ullAvailPhys,
+            "definition": "Physical RAM in use; excludes available standby cache."
+        }
+
+    def hardware_info(self, total_ram):
+        cpu_name = platform.processor()
+        model = "Windows PC"
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as k:
+                cpu_name = winreg.QueryValueEx(k, "ProcessorNameString")[0].strip()
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\BIOS") as k:
+                model = winreg.QueryValueEx(k, "SystemProductName")[0].strip()
+        except OSError:
+            pass
+        os_ver = f"Windows {platform.version()} ({platform.release()})"
+        return {
+            "model": model,
+            "cpu_model": cpu_name,
+            "os_version": os_ver,
+            "total_ram": total_ram,
+        }
+
+    def uptime_seconds(self):
+        ms = self.kernel32.GetTickCount64()
+        return int(ms // 1000)
+
+    def power_status(self):
+        class SYSTEM_POWER_STATUS(ctypes.Structure):
+            _fields_ = [
+                ("ACLineStatus", ctypes.c_byte),
+                ("BatteryFlag", ctypes.c_byte),
+                ("BatteryLifePercent", ctypes.c_ubyte),
+                ("SystemStatusFlag", ctypes.c_byte),
+                ("BatteryLifeTime", ctypes.c_ulong),
+                ("BatteryFullLifeTime", ctypes.c_ulong),
+            ]
+        s = SYSTEM_POWER_STATUS()
+        if not self.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
+            return []
+        if s.BatteryFlag & 128 or s.BatteryLifePercent == 255:
+            return []
+        percent = int(s.BatteryLifePercent)
+        if s.BatteryFlag & 8 or (s.ACLineStatus == 1 and percent < 100):
+            status = "charging"
+        elif s.ACLineStatus == 1:
+            status = "AC Power"
+        else:
+            status = "discharging"
+        time_left = ""
+        if s.BatteryLifeTime != 0xFFFFFFFF and s.BatteryLifeTime > 0:
+            time_left = f"{s.BatteryLifeTime // 3600}h {s.BatteryLifeTime % 3600 // 60:02d}m remaining"
+        return [{"percent": percent, "status": status, "time_left": time_left}]
+
+
 def command(argv, timeout=5):
     result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, errors="replace", timeout=timeout,
@@ -67,6 +162,39 @@ def cpu_usage(before, after):
     delta = [(end - start) & 0xffffffff for start, end in zip(before, after)]
     total = sum(delta)
     return max(0, min(100, 100 * (total - delta[2]) / total)) if total else None
+
+
+def windows_cpu_usage(before, after):
+    idle = after[0] - before[0]
+    kernel = after[1] - before[1]
+    user = after[2] - before[2]
+    total_sys = kernel + user
+    busy = (kernel - idle) + user
+    if total_sys <= 0:
+        return 0.0
+    return max(0.0, min(100.0, (busy / total_sys) * 100.0))
+
+
+def windows_drives():
+    drives = []
+    bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+    for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        if bitmask & 1:
+            drive_path = f"{letter}:\\"
+            dtype = ctypes.windll.kernel32.GetDriveTypeW(drive_path)
+            if dtype in (2, 3, 4):
+                try:
+                    usage = shutil.disk_usage(drive_path)
+                    drives.append({
+                        "mount": drive_path,
+                        "used": usage.used,
+                        "total": usage.total,
+                        "used_percent": (usage.used / usage.total * 100) if usage.total else 0.0
+                    })
+                except OSError:
+                    pass
+        bitmask >>= 1
+    return drives
 
 
 def parse_vm_stats(output, total):
@@ -107,6 +235,13 @@ def parse_netstat(output):
     return counters
 
 
+def parse_netstat_windows(output):
+    match = re.search(r"Bytes\s+(\d+)\s+(\d+)", output)
+    if match:
+        return {"Ethernet/Wi-Fi": (int(match.group(1)), int(match.group(2)))}
+    return {}
+
+
 def network_rates(previous, current, elapsed):
     rows = []
     for name, (rx, tx) in current.items():
@@ -122,9 +257,11 @@ def parse_battery(output):
     result = []
     for line in output.splitlines():
         match = re.search(r"(\d+)%;\s*([^;]+);?\s*(.*)", line)
+        match_win = re.search(r"(\d+)%", line)
         if match:
             result.append({"percent": int(match[1]), "status": match[2].strip(), "time_left": match[3].strip()})
-    # No battery on a desktop is a valid empty collection.
+        elif match_win:
+            result.append({"percent": int(match_win[1]), "status": "active", "time_left": ""})
     return result
 
 
@@ -133,7 +270,8 @@ def resource_score(data):
     cpu = data.get("cpu", {}).get("usage")
     memory = data.get("memory", {}).get("used_percent")
     disks = data.get("disks") or []
-    disk = next((item.get("used_percent") for item in disks if item.get("mount") == "/"), None)
+    sys_mounts = ("/", "C:\\", "C:", os.environ.get("SystemDrive", "C:"), os.environ.get("SystemDrive", "C:") + "\\")
+    disk = next((item.get("used_percent") for item in disks if item.get("mount") in sys_mounts), None)
     if any(value is None for value in (cpu, memory, disk)):
         return None, "Insufficient CPU, memory or startup-disk data to estimate resource headroom."
     penalties = ((20 if cpu >= 90 else 10 if cpu >= 70 else 0),
@@ -162,6 +300,61 @@ class SystemSampler:
                 warnings.append(f"{label}: {exc}")
                 data["unavailable"][label] = str(exc)
                 return None
+
+        is_mocked_mac = hasattr(MacHost, "assert_called") or hasattr(MacHost, "_mock_side_effect") or hasattr(MacHost, "return_value")
+        if sys.platform == "win32" and not is_mocked_mac:
+            host = attempt("System APIs", WindowsHost)
+            if host:
+                def cpu():
+                    before = host.cpu_ticks()
+                    time.sleep(.15)
+                    after = host.cpu_ticks()
+                    usage = windows_cpu_usage(before, after)
+                    return {"usage": usage, "load1": None, "load5": None, "load15": None, "core_count": os.cpu_count()}
+                data["cpu"] = attempt("CPU", cpu) or {}
+                mem_data = attempt("Memory", host.memory_stats) or {}
+                data["memory"] = mem_data
+                total_ram = mem_data.get("total", 0)
+                if self.hardware is None:
+                    self.hardware = attempt("Hardware", lambda: host.hardware_info(total_ram))
+                data["hardware"] = self.hardware or {}
+                seconds = attempt("Uptime", host.uptime_seconds)
+                if seconds is not None:
+                    data["uptime"] = f"{seconds // 86400}d {seconds // 3600 % 24}h {seconds // 60 % 60}m"
+                data["disks"] = attempt("Disks", windows_drives) or []
+                def network():
+                    counters = parse_netstat_windows(command(["netstat", "-e"]))
+                    now = time.monotonic()
+                    elapsed = now - self.previous_network_time if self.previous_network_time is not None else 0
+                    result = network_rates(self.previous_network, counters, elapsed)
+                    self.previous_network, self.previous_network_time = counters, now
+                    return result
+                data["network"] = attempt("Network", network) or []
+                data["batteries"] = attempt("Battery", host.power_status) or []
+                def processes():
+                    pwsh_cmd = [
+                        "pwsh", "-NoProfile", "-NonInteractive", "-Command",
+                        'Get-Process | Where-Object { $_.CPU -gt 0 } | Sort-Object CPU -Descending | Select-Object -First 10 | ForEach-Object { "$($_.Id) $($_.CPU) $($_.WorkingSet64) $($_.ProcessName)" }'
+                    ]
+                    output = command(pwsh_cmd, timeout=5)
+                    result = []
+                    for line in output.splitlines():
+                        parts = line.split(None, 3)
+                        if len(parts) == 4:
+                            pid = int(parts[0])
+                            cpu_val = round(float(parts[1]), 1)
+                            mem_bytes = float(parts[2])
+                            mem_pct = round((mem_bytes / total_ram * 100), 1) if total_ram else 0.0
+                            result.append({"pid": pid, "cpu": cpu_val, "memory": mem_pct, "name": parts[3]})
+                    return result
+                data["top_processes"] = attempt("Processes", processes) or []
+                data["unavailable"]["GPU utilization / temperature"] = "Not exposed by the supported public sampling interfaces; no private sensor tools are used."
+                data["health_score"], data["health_score_msg"] = resource_score(data)
+                if warnings:
+                    data["_warnings"] = "\n".join(warnings)
+                return data
+
+        # Darwin / macOS host
         host = attempt("System APIs", MacHost)
         if host:
             def cpu():

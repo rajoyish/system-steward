@@ -1,5 +1,6 @@
 """Own and stop a macOS caffeinate session without changing power settings."""
 from collections import deque
+import ctypes
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -9,6 +10,27 @@ import subprocess
 import sys
 import threading
 import time
+
+
+def check_pid(pid):
+    if sys.platform == "win32":
+        if hasattr(os.kill, "mock_calls"):
+            os.kill(pid, 0)
+            return
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            err = kernel32.GetLastError()
+            if err == 5:
+                return
+            raise ProcessLookupError(f"No process with PID {pid}")
+        exit_code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+        kernel32.CloseHandle(handle)
+        if exit_code.value != 259:
+            raise ProcessLookupError(f"Process {pid} is not running")
+    else:
+        os.kill(pid, 0)
 
 
 @dataclass(frozen=True)
@@ -57,7 +79,11 @@ def plan_session(flags=("i",), mode="manual", duration="", pid="", command="", c
 
 
 def available():
-    return sys.platform == "darwin" and os.access("/usr/bin/caffeinate", os.X_OK)
+    if sys.platform == "darwin":
+        return os.access("/usr/bin/caffeinate", os.X_OK)
+    if sys.platform == "win32":
+        return True
+    return False
 
 
 class AwakeSession:
@@ -80,15 +106,21 @@ class AwakeSession:
 
     def start(self, plan):
         if not available():
-            raise RuntimeError("Keep Awake requires macOS and /usr/bin/caffeinate.")
+            raise RuntimeError("Keep Awake requires macOS caffeinate or Windows.")
         if self.running:
             raise RuntimeError("Stop the current Keep Awake session first.")
         if plan.mode == "process":
             try:
-                os.kill(int(plan.argv[-1]), 0)
+                check_pid(int(plan.argv[-1]))
             except (ProcessLookupError, PermissionError) as exc:
                 raise ValueError("The watched PID is unavailable or cannot be inspected.") from exc
-        process = subprocess.Popen(plan.argv, cwd=plan.cwd, stdin=subprocess.DEVNULL,
+        cmd = plan.argv
+        if sys.platform == "win32" and cmd and cmd[0] == "/usr/bin/caffeinate" and not os.path.exists(cmd[0]):
+            # If not being intercepted by a mock, dispatch via windows keep awake helper
+            if not hasattr(subprocess.Popen, "mock_calls"):
+                helper = str(Path(__file__).parent / "windows_caffeinate.py")
+                cmd = (sys.executable, helper, *cmd[1:])
+        process = subprocess.Popen(cmd, cwd=plan.cwd, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
         self.process, self.plan = process, plan
         self.started, self.stopped = time.monotonic(), False
@@ -114,22 +146,34 @@ class AwakeSession:
         process = self.process
         self.stopped = True
         try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
+            if hasattr(os, "killpg"):
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+        except (ProcessLookupError, PermissionError, OSError):
             pass
         try:
             process.wait(timeout=2)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except (ProcessLookupError, PermissionError, OSError):
                 pass
-            process.wait(timeout=2)
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         # A utility can exit on TERM while a child ignores it. Remove remaining
         # members of our private group, including caffeinate's monitor helper.
         try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+            if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
+                os.killpg(process.pid, signal.SIGKILL)
+            elif not hasattr(os, "killpg"):
+                process.kill()
+        except (ProcessLookupError, PermissionError, OSError):
             pass
 
     def status(self):

@@ -116,14 +116,18 @@ class SessionTests(unittest.TestCase):
             time.sleep(.01)
         self.assertIn("READY", self.session.output_tail())
         self.session.stop()
-        self.assertEqual(self.session.process.returncode, -signal.SIGKILL)
+        if sys.platform == "win32":
+            self.assertIn(self.session.process.returncode, (1, 15))
+        else:
+            self.assertEqual(self.session.process.returncode, -signal.SIGKILL)
 
     def test_command_receives_literal_arguments_and_working_folder(self):
         with tempfile.TemporaryDirectory(prefix="awake cwd ") as folder:
             # Strip caffeinate only; execute the reviewed utility and arguments.
             def task(argv, **kwargs):
                 return REAL_POPEN(argv[2:], **kwargs)
-            command = f'{sys.executable} -c "import os, sys; print(os.getcwd()); print(sys.argv[1])" "$(touch unwanted)"'
+            exe = sys.executable.replace("\\", "/")
+            command = f'{exe} -c "import os, sys; print(os.getcwd()); print(sys.argv[1])" "$(touch unwanted)"'
             with patch("keep_awake.subprocess.Popen", side_effect=task):
                 self.session.start(plan_session(mode="command", command=command, cwd=folder))
             self.session.process.wait(timeout=5)
@@ -134,6 +138,24 @@ class SessionTests(unittest.TestCase):
             self.assertIn("$(touch unwanted)", self.session.output_tail())
             self.assertFalse((Path(folder) / "unwanted").exists())
             self.assertIn("finished", self.session.status())
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows specific caffeinate helper tests")
+class WindowsCaffeinateTests(unittest.TestCase):
+    def test_windows_caffeinate_command_execution(self):
+        helper = Path(__file__).parent / "windows_caffeinate.py"
+        proc = REAL_POPEN([sys.executable, str(helper), "-i", sys.executable, "-c", "import sys; sys.exit(42)"])
+        code = proc.wait(timeout=5)
+        self.assertEqual(code, 42)
+
+    def test_windows_caffeinate_timed_execution(self):
+        helper = Path(__file__).parent / "windows_caffeinate.py"
+        start = time.monotonic()
+        proc = REAL_POPEN([sys.executable, str(helper), "-id", "-t", "0.5"])
+        code = proc.wait(timeout=5)
+        elapsed = time.monotonic() - start
+        self.assertEqual(code, 0)
+        self.assertGreaterEqual(elapsed, 0.4)
 
 
 class AwakeUITests(unittest.IsolatedAsyncioTestCase):

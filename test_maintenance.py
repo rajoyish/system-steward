@@ -155,7 +155,7 @@ class NativeUITests(unittest.IsolatedAsyncioTestCase):
                     await pilot.resize_terminal(80, 24)
                     await pilot.pause()
                     self.assertLessEqual(screen.query_one("#maintenance-actions").region.bottom, 24)
-                    app.save_screenshot("maintenance-cleanup.svg", path="previews")
+                    app.save_screenshot("maintenance-cleanup.svg", path=str(Path("previews").resolve()))
                     await pilot.press("escape")
                     self.assertNotIsInstance(app.screen, MaintenanceScreen)
                     self.assertGreaterEqual(backend.call_count, 2)  # Dashboard plus detailed status.

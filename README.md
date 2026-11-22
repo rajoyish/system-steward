@@ -3,11 +3,30 @@ by Rajesh Budhathoki
 
 A terminal app for understanding disk usage, reviewing cleanup targets, and managing system maintenance. Built with Python, Textual, and Rich, with keyboard and mouse navigation.
 
-**Available now: macOS. Windows support is planned for a future release.** The current launchers, storage locations, system readings, and maintenance actions use macOS facilities; this release does not support Windows or Linux.
+**Available on: Windows and macOS.** All features are natively implemented across platforms: **PowerShell 7 (`pwsh`)**, **Scoop**, and Win32 APIs via Python `ctypes` on Windows, and Darwin Mach APIs on macOS.
 
 ## Get started
 
-Requirements: macOS, Python 3.10 or newer, zsh, and a terminal. Installation requires an internet connection. Touch ID configuration requires macOS Sonoma or later and compatible hardware.
+### Windows (PowerShell 7 & Scoop)
+
+Requirements: Windows 10/11, [PowerShell 7 (`pwsh`)](https://github.com/PowerShell/PowerShell), [Scoop package manager](https://scoop.sh), and a terminal.
+
+1. Install Python via Scoop:
+   ```powershell
+   scoop install python
+   ```
+2. Clone and run setup:
+   ```powershell
+   git clone https://github.com/rajoyish/system-steward.git
+   cd system-steward
+   pwsh -File .\setup.ps1
+   pwsh -File .\system-steward.ps1
+   ```
+3. You can also run `SystemSteward.cmd` or `SystemSteward.ps1` from File Explorer or any terminal.
+
+### macOS (zsh)
+
+Requirements: macOS, Python 3.10 or newer, zsh, and a terminal. Touch ID configuration requires macOS Sonoma or later and compatible hardware.
 
 ```zsh
 git clone https://github.com/rajoyish/system-steward.git
@@ -18,32 +37,48 @@ cd system-steward
 
 Setup installs the pinned dependencies from `requirements.txt` into a local `.venv`. To choose your Python interpreter:
 
+```powershell
+# Windows
+$env:SYSTEM_STEWARD_PYTHON = "python.exe"; pwsh -File .\setup.ps1
+```
 ```zsh
+# macOS
 SYSTEM_STEWARD_PYTHON=python3.12 ./setup
 ```
 
-You can also double-click `SystemSteward.command` in Finder. The app runs in your terminal. The old `mac-steward`, `MacSteward.command`, and `storage` launchers remain available for compatibility, as do the `MAC_STEWARD_PYTHON` and `STORAGE_PYTHON` setup variables.
+You can double-click `SystemSteward.cmd` on Windows or `SystemSteward.command` on macOS.
 
-Explore a specific folder or generate a report without opening the interface:
+### CLI Usage
 
+Explore a specific folder or generate a report without opening the full TUI:
+
+```powershell
+# Windows PowerShell 7
+pwsh -File .\system-steward.ps1 ~
+pwsh -File .\system-steward.ps1 --json ~ > report.json
+pwsh -File .\system-steward.ps1 --timeout 30 ~
+pwsh -File .\system-steward.ps1 --version
+```
 ```zsh
+# macOS zsh
 ./system-steward ~/Downloads
 ./system-steward --json ~/sites > report.json
 ./system-steward --timeout 30 ~/Downloads
 ./system-steward --version
 ```
 
-Without a folder argument, the app audits common Chrome, Adobe, developer, project, and application storage locations, including projects in `~/sites`. The application code lives at the repository root.
+Without a folder argument, the app audits common Chrome, Adobe, developer, project, and application storage locations across user AppData and Program Files (Windows) or `~/Library` (macOS).
 
 ## What you can do
 
-- **Explore storage:** browse folders by size, filter paths, inspect details, and export measurements as JSON.
-- **Monitor your Mac:** view CPU, RAM, disk, network, battery, process, hardware, and uptime readings.
-- **Review cleanup:** inspect Chrome and Adobe caches, user caches and logs, generated developer artifacts, and downloaded installers.
-- **Remove applications:** review application bundles and user data matched to their exact bundle IDs.
-- **Run maintenance:** preview and select DNS refresh, Quick Look reset, application registration refresh, and Spotlight reindexing.
-- **Configure Touch ID for sudo:** review the proposed local PAM configuration before applying it.
-- **Keep Awake (macOS):** temporarily prevent idle, display, or disk sleep with a timer, a watched PID, or a wrapped command.
+- **Explore storage:** browse folders by size, filter paths, inspect details, and export measurements as JSON. Uses fast native `os.scandir` recursive sizing on Windows (scans multi-gigabyte folders in ~1s) and `du` on macOS.
+- **Monitor your system:** view live CPU load, physical RAM usage, drive volumes, network rates, battery status, top processes, hardware model, and uptime. Uses native Win32 APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetSystemPowerStatus`, `GetTickCount64`) via `ctypes` on Windows, and Mach APIs on macOS.
+- **Review cleanup:** inspect Chrome and Adobe caches, user caches and logs, generated developer artifacts (`node_modules`, `.venv`, `target`, `dist`, `build`), and downloaded installers (`.exe`, `.msi`, `.iso`, `.dmg`, `.pkg`).
+- **Remove applications:** review installed programs and user data matched to their application identities.
+- **Run maintenance:**
+  - **Windows:** flush DNS cache (`Clear-DnsClientCache`), reset thumbnail and icon cache database (`thumbcache`), reset Windows Store registration (`wsreset.exe -i`), and restart/rebuild Windows Search indexer (`WSearch`).
+  - **macOS:** flush DNS (`dscacheutil`), reset Quick Look (`qlmanage`), refresh LaunchServices (`lsregister`), and reindex Spotlight (`mdutil`).
+- **Keep Awake:** temporarily prevent idle, display, or disk sleep with a timer, a watched PID, or a wrapped command. Uses Win32 `SetThreadExecutionState` on Windows (`windows_caffeinate.py`) and `/usr/bin/caffeinate` on macOS. System power and sleep settings stay unchanged.
 
 Scans run in the background. The dashboard includes disk usage cards and an expandable system section with live readings and tool previews. Opening a tool or preview does not apply changes.
 
@@ -99,28 +134,34 @@ Cleanup covers standard macOS Chrome profiles and Chrome's separate macOS cache 
 
 Press **a** to discover and measure eligible cache groups. Inspect the highlighted group's path and effect, view skipped paths, or press **g** for the built-in purge guide. Custom and external cache locations are excluded.
 
-Eligible locations under `~/Library` include:
+Eligible locations include:
 
-| Location | Eligible contents |
-| --- | --- |
-| `Application Support/Adobe/Common/Media Cache` | Shared media database cache |
-| `Application Support/Adobe/Common/Media Cache Files` | Conformed media cache |
-| `Application Support/Adobe/Common/Peak Files` | Audio peak cache |
-| `Caches/Adobe/…` | Named cache and temporary subfolders, including versioned folders |
-| `Caches/Adobe/Lightroom/Video` | Lightroom video cache |
-| `Caches/Adobe InDesign` | InDesign cache |
-| `Caches/Adobe Camera Raw` or `Adobe Camera Raw N` | Camera Raw cache |
-| `Caches/com.adobe.*` | Adobe application cache |
+| Platform | Location | Eligible contents |
+| --- | --- | --- |
+| Windows | `%APPDATA%\Adobe\Common\Media Cache` | Shared media database cache |
+| Windows | `%APPDATA%\Adobe\Common\Media Cache Files` | Conformed media cache |
+| Windows | `%APPDATA%\Adobe\Common\Peak Files` | Audio peak cache |
+| Windows | `%LOCALAPPDATA%\Adobe\…` | Named cache and temporary subfolders, including versioned folders |
+| macOS | `Library/Application Support/Adobe/Common/Media Cache` | Shared media database cache |
+| macOS | `Library/Application Support/Adobe/Common/Media Cache Files` | Conformed media cache |
+| macOS | `Library/Application Support/Adobe/Common/Peak Files` | Audio peak cache |
+| macOS | `Library/Caches/Adobe/…` | Named cache and temporary subfolders, including versioned folders |
+| macOS | `Library/Caches/Adobe/Lightroom/Video` | Lightroom video cache |
+| macOS | `Library/Caches/Adobe InDesign` | InDesign cache |
+| macOS | `Library/Caches/Adobe Camera Raw` or `Adobe Camera Raw N` | Camera Raw cache |
+| macOS | `Library/Caches/com.adobe.*` | Adobe application cache |
 
 **Save your work and quit Adobe apps and Creative Cloud before confirming.** The app blocks cleanup when Adobe apps or helpers are detected, checks again during deletion, and never force-quits them. Selected cache contents are permanently deleted; cache parent folders remain. Adobe rebuilds caches on subsequent launches, which can make the first project reopen slower.
 
-Preferences, presets, plugins, scripts, workspaces, Lightroom catalogs, catalog sidecars, and `.lrcat-data` are protected. Candidates containing protected folders, catalogs, or symlinks are skipped and rechecked before deletion. The Adobe Application Support root and Library Preferences root are never cleanup targets.
+Preferences, presets, plugins, scripts, workspaces, Lightroom catalogs, catalog sidecars, and `.lrcat-data` are protected. Candidates containing protected folders, catalogs, or symlinks are skipped and rechecked before deletion. The Adobe Application Support / AppData root and Library Preferences root are never cleanup targets.
 
 Prefer Adobe's built-in purge controls for media databases where available. Save and close projects first, purge from the app's cache settings, verify completion, then quit and relaunch before editing. Menu labels vary by version. See Adobe's [manual media cache instructions](https://helpx.adobe.com/premiere/desktop/troubleshooting/media-issues/delete-media-cache-files-manually.html), [After Effects storage guidance](https://helpx.adobe.com/after-effects/desktop/memory-storage-performance/memory-and-storage/memory-storage1.html), and [Lightroom Classic performance guidance](https://helpx.adobe.com/lightroom-classic/desktop/technical-support/performance-guidelines/optimize-performance-lightroom.html).
 
-## Keep Awake (macOS)
+## Keep Awake (Windows & macOS)
 
-Press **k**, click **Keep awake** in the sidebar, or choose **Keep Awake (macOS)** from the System tools menu. It uses the built-in `/usr/bin/caffeinate`; no extra background app or System Settings change is required. This feature is macOS-only.
+Press **k**, click **Keep awake** in the sidebar, or choose **Keep Awake** from the System tools menu. It prevents idle system sleep without changing permanent power settings:
+- **Windows:** Uses the Win32 `SetThreadExecutionState` API (`windows_caffeinate.py`).
+- **macOS:** Uses the built-in `/usr/bin/caffeinate`.
 
 Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d`), **Disk idle sleep** (`-m`), or a combination. Then choose how the session ends:
 
@@ -130,49 +171,41 @@ Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d
 
 Choose **Review & start** and inspect the exact command before confirming. Only one app-managed session runs at a time. You can return to storage browsing while it runs; the sidebar shows when Keep Awake is active. Reopen the tool to see its PID, remaining time, and output, or choose **Stop session**.
 
-App-managed sessions stop when you quit System Steward. **Stopping a wrapped-command session or quitting the app also terminates that command and its process group**, with confirmation. macOS still controls explicit Sleep, lid-close behavior, and low-battery sleep. Preventing disk idle sleep is a request, not continuous disk activity.
-
-For a session independent of System Steward, macOS also supports these Terminal commands:
-
-```zsh
-caffeinate                 # Until Ctrl-C; prevents idle system sleep
-caffeinate -t 3600         # One hour
-caffeinate -di             # Keep the display and system from idle sleeping
-caffeinate -m              # Prevent disk idle sleep
-caffeinate -i your_command # Until the command exits
-caffeinate -i -w 12345     # Until PID 12345 exits
-caffeinate -di &           # Run in the shell background
-awake_pid=$!               # Save this session's PID
-kill "$awake_pid"          # Stop that background session
-```
-
-See `man caffeinate` on your Mac or [Apple's caffeinate source](https://github.com/apple-oss-distributions/PowerManagement/blob/main/caffeinate/caffeinate.c) for the native behavior.
+App-managed sessions stop when you quit System Steward. **Stopping a wrapped-command session or quitting the app also terminates that command and its process group**, with confirmation. The operating system still controls explicit Sleep, lid-close behavior, and low-battery sleep. Preventing disk idle sleep is a request, not continuous disk activity.
 
 ## System maintenance and readings
 
-Maintenance tasks show the exact commands and effects before confirmation. Only selected tasks run. A failure stops subsequent tasks. **Stop after item** waits for the current task to finish. Spotlight completion means reindexing was requested, not that indexing has finished. These actions are troubleshooting tools; they do not guarantee faster performance.
+Maintenance tasks show the exact commands and effects before confirmation. Only selected tasks run. A failure stops subsequent tasks. **Stop after item** waits for the current task to finish. These actions are troubleshooting tools; they do not guarantee faster performance.
 
-Administrator actions use the standard macOS authorization dialog after the app's own confirmation. System Steward does not collect or store administrator passwords. Commands have timeouts, bounded output, and subprocess cleanup.
+- **Windows:** Uses PowerShell 7 and standard Windows management tools (`Clear-DnsClientCache`, thumbnail database rebuilds, `wsreset.exe -i`, and `WSearch` service restart).
+- **macOS:** Administrator actions use the standard macOS authorization dialog after the app's own confirmation. Touch ID changes use `/etc/pam.d/sudo_local` on macOS Sonoma and later.
 
-Touch ID changes use `/etc/pam.d/sudo_local` on macOS Sonoma and later. The app verifies that the main sudo configuration includes that file, refuses automatic edits when a legacy Touch ID entry exists in the main file, previews proposed contents, checks for changes since preview, backs up an existing local file, writes atomically, and verifies the result. It never edits the main sudo configuration. A compatible sensor and enrolled fingerprint are required; enabling the configuration does not verify hardware availability. See Apple's [macOS Sonoma enterprise notes](https://support.apple.com/en-us/109030).
+System readings use native platform APIs with no third-party background daemon required:
+- **Windows:** Win32 API calls via `ctypes` (`GetSystemTimes` for CPU load, `GlobalMemoryStatusEx` for RAM, volume metrics for drives, `GetSystemPowerStatus` for battery, and `GetTickCount64` for uptime).
+- **macOS:** Public Mach APIs and bundled tools.
 
-System readings use public macOS Mach APIs and bundled tools, with no third-party maintenance CLI required. CPU comes from sampled tick deltas; RAM includes active, wired, and physical compressor pages; network rates use interface counter deltas. These measurements can differ from Activity Monitor. GPU utilization and temperature are marked unavailable. Permission failures remain partial readings rather than healthy zero values.
-
-The resource score is an app-defined estimate, not a hardware diagnostic. It starts at 100 and subtracts points for CPU, RAM, and startup-disk usage thresholds; details show the formula. A missing required reading makes the estimate unavailable.
+The resource score is an app-defined estimate, not a hardware diagnostic. It starts at 100 and subtracts points for CPU, RAM, and system-disk usage thresholds; details show the formula. A missing required reading makes the estimate unavailable.
 
 ## Measurement limits
 
-Scanning is read-only. Deletion is available only through a confirmed cleanup action. Directory sizes use allocated disk blocks from `du`, displayed in binary units. Scans use six workers and a default timeout of 120 seconds per location. Navigation and quitting cancel the previous scan.
+Scanning is read-only. Deletion is available only through a confirmed cleanup action. Directory sizes use fast non-blocking native recursive traversal (`os.scandir`) on Windows, and allocated disk blocks from `du` on macOS, displayed in binary units. Scans use worker pools with cancellation and timeout protection. Navigation and quitting cancel the previous scan.
 
-The measured total covers the selected locations, not the entire disk. The disk meter uses filesystem usage. APFS snapshots, shared blocks, hard links, and permissions can make directory totals differ from volume usage. Folder listings skip symlinks, and scans do not follow nested symlinks. Missing, unreadable, partial, and timed-out locations are labeled; partial sizes have an asterisk and can undercount. macOS privacy permissions can limit coverage. Cleanup estimates can differ from space actually reclaimed.
+The measured total covers the selected locations, not the entire disk. The disk meter uses filesystem usage. Missing, unreadable, partial, and timed-out locations are labeled; partial sizes have an asterisk and can undercount. Cleanup estimates can differ from space actually reclaimed.
 
 ## Development
+
+Run tests on Windows:
+
+```powershell
+pwsh -File .\setup.ps1
+pwsh -Command ".venv\Scripts\python -m unittest -v"
+```
+
+Run tests on macOS:
 
 ```zsh
 ./setup
 .venv/bin/python -m unittest -v
 ```
 
-Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse interaction, resizing, cleanup selection and confirmation, running-app blocking, maintenance, and system readings. Cleanup tests use temporary fake profiles and Library folders instead of real Chrome or Adobe data.
-
-Windows support is a future development goal. Platform-specific discovery, measurements, cleanup targets, maintenance actions, and launchers will need Windows implementations before it is supported.
+Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse interaction, resizing, cleanup selection and confirmation, running-app blocking, maintenance, Keep Awake sessions, and system readings. Cleanup tests use temporary fake profiles and folders instead of real Chrome or Adobe data.

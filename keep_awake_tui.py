@@ -3,6 +3,7 @@ import asyncio
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 
 from rich.text import Text
 from textual import on
@@ -29,11 +30,15 @@ class KeepAwakeScreen(Screen):
     def compose(self):
         with Horizontal(classes="topbar"):
             yield Label(BRAND, classes="brand")
-            yield Label("KEEP AWAKE · macOS", classes="top-context")
+            context_label = "KEEP AWAKE · Windows" if sys.platform == "win32" else "KEEP AWAKE · macOS"
+            yield Label(context_label, classes="top-context")
             yield Button("← Back", id="awake-back")
         with VerticalScroll(id="awake-workspace"):
             yield Label("Keep Awake", classes="page-title")
-            yield Static("Temporarily prevent sleep with macOS caffeinate. System Settings stay unchanged. Sessions continue while you browse the app and stop when you quit.", classes="awake-copy")
+            copy_text = ("Temporarily prevent sleep with Windows SetThreadExecutionState. Power & sleep settings stay unchanged. Sessions continue while you browse the app and stop when you quit."
+                if sys.platform == "win32" else
+                "Temporarily prevent sleep with macOS caffeinate. System Settings stay unchanged. Sessions continue while you browse the app and stop when you quit.")
+            yield Static(copy_text, classes="awake-copy")
             yield Static("", id="awake-status")
             yield Label("Prevent", classes="eyebrow")
             yield Checkbox("Idle system sleep (-i)", value=True, id="awake-idle")

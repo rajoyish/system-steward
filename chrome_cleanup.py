@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import threading
 
 
@@ -32,9 +33,13 @@ PROFILE_TARGETS = frozenset(SITE_DIRS + CACHE_DIRS + tuple(
 
 def chrome_running():
     """Check the browser and helpers, excluding the standalone crash reporter."""
+    if sys.platform == "win32":
+        cmd = ["pwsh", "-NoProfile", "-Command", "if (Get-Process chrome -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"]
+    else:
+        cmd = ["pgrep", "-f", r"/Google Chrome[.]app/Contents/(MacOS/Google Chrome|Frameworks/.*/Google Chrome Helper)"]
     try:
         result = subprocess.run(
-            ["pgrep", "-f", r"/Google Chrome[.]app/Contents/(MacOS/Google Chrome|Frameworks/.*/Google Chrome Helper)"],
+            cmd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise OSError("Cannot verify that Chrome is closed; cleanup was blocked") from exc
@@ -76,9 +81,28 @@ def validate_target(plan, path):
 
 
 def build_plan(home=None):
-    home = Path(home) if home is not None else Path.home()
-    data = home / "Library/Application Support/Google/Chrome"
-    cache = home / "Library/Caches/Google/Chrome"
+    if home is not None:
+        home_path = Path(home)
+        mac_data = home_path / "Library/Application Support/Google/Chrome"
+        win_data = home_path / "AppData/Local/Google/Chrome/User Data"
+        if win_data.is_dir() and not mac_data.is_dir():
+            data = win_data
+            cache = home_path / "AppData/Local/Google/Chrome/Cache"
+        else:
+            data = mac_data
+            cache = home_path / "Library/Caches/Google/Chrome"
+    elif sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            data = Path(local_app_data) / "Google/Chrome/User Data"
+            cache = Path(local_app_data) / "Google/Chrome/Cache"
+        else:
+            data = Path.home() / "AppData/Local/Google/Chrome/User Data"
+            cache = Path.home() / "AppData/Local/Google/Chrome/Cache"
+    else:
+        home_path = Path.home()
+        data = home_path / "Library/Application Support/Google/Chrome"
+        cache = home_path / "Library/Caches/Google/Chrome"
     candidates, skipped, profiles = [], [], []
     for root in (data, cache):
         if not safe_path(root):

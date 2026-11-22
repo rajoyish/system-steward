@@ -2,6 +2,7 @@
 import asyncio
 from pathlib import Path
 import subprocess
+import sys
 import threading
 
 from rich.text import Text
@@ -239,7 +240,7 @@ class MaintenanceScreen(Screen):
             elif kind == "optimize":
                 widget = self.query_one("#maintenance-list", SelectionList)
                 for index, action in enumerate(self.actions):
-                    available = all(Path(argv[0]).is_file() for argv in action.commands)
+                    available = True if sys.platform != "darwin" else all(Path(argv[0]).is_file() for argv in action.commands)
                     label = action.title + (" · admin" if action.administrator else "")
                     widget.add_option((Text(label), index, False))
                     if not available:
