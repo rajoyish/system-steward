@@ -1,0 +1,16 @@
+#!/bin/zsh
+set -eu
+project_dir="${0:A:h}"
+python_bin="${SYSTEM_STEWARD_PYTHON:-${MAC_STEWARD_PYTHON:-${STORAGE_PYTHON:-python3}}}"
+if [[ ! -x "$project_dir/.venv/bin/python" ]]; then
+  "$python_bin" -m venv "$project_dir/.venv"
+fi
+if ! "$project_dir/.venv/bin/python" -m pip --version >/dev/null 2>&1; then
+  "$project_dir/.venv/bin/python" -m ensurepip --upgrade
+fi
+if [[ -d "$project_dir/.wheels" ]]; then
+  "$project_dir/.venv/bin/python" -m pip install --no-index --find-links "$project_dir/.wheels" -r "$project_dir/requirements.txt"
+else
+  "$project_dir/.venv/bin/python" -m pip install -r "$project_dir/requirements.txt"
+fi
+print '\nReady. Run ./system-steward to open System Steward.'

@@ -1,0 +1,184 @@
+"""Textual integration tests; all deletions use temporary fake Library folders."""
+import asyncio
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from textual.widgets import Button, DataTable, Input, Select, SelectionList
+
+import adobe_cleanup
+import chrome_cleanup
+from cleanup_selection import cleanup_groups, selection_plan
+from system_steward_tui import CleanupScreen, ConfirmDialog, InfoDialog, SystemStewardApp
+
+
+class SelectionTests(unittest.TestCase):
+    def test_cache_scope_excludes_website_data_and_selected_plan_is_exact(self):
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder).resolve()
+            data = home / "Library/Application Support/Google/Chrome/Default"
+            for name in ("Cookies", "Cookies-wal", "IndexedDB/data", "Cache/data"):
+                path = data / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture")
+            plan = chrome_cleanup.build_plan(home)
+            caches = cleanup_groups("Chrome", plan)
+            self.assertEqual(len(caches), 1)
+            self.assertTrue(all(path.name == "Cache" for group in caches for path in group.targets))
+            groups = cleanup_groups("Chrome", plan, "sites")
+            index = next(i for i, group in enumerate(groups) if "website data" in group.label)
+            restricted = selection_plan(plan, groups, {index})
+            self.assertEqual(set(restricted.targets), {data / "Cookies", data / "Cookies-wal", data / "IndexedDB"})
+            self.assertNotIn(data / "Cache", restricted.targets)
+            for invalid in (set(), {-1}, {999}):
+                with self.assertRaises(ValueError):
+                    selection_plan(plan, groups, invalid)
+
+
+class UITests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.home = Path(self.temp.name).resolve()
+        self.root = self.home / "projects"
+        self.root.mkdir()
+        (self.root / "website").mkdir()
+        (self.root / "website/index.html").write_text("hello")
+        (self.root / "notes.md").write_text("notes")
+
+    def put(self, relative):
+        path = self.home / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture")
+        return path
+
+    async def wait_for(self, pilot, condition, timeout=5):
+        deadline = asyncio.get_running_loop().time() + timeout
+        while not condition() and asyncio.get_running_loop().time() < deadline:
+            await pilot.pause(.05)
+        self.assertTrue(condition(), "Timed out waiting for UI state")
+        await pilot.pause(.05)
+
+    def app(self):
+        return SystemStewardApp(root=self.root, home=self.home, timeout=3)
+
+    async def test_explorer_search_navigation_resize_and_export(self):
+        app = self.app()
+        async with app.run_test(size=(140, 44)) as pilot:
+            await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
+            table = app.query_one("#files", DataTable)
+            self.assertEqual(table.row_count, 2)
+            table.move_cursor(row=table.get_row_index(str(self.root / "website")))
+            await pilot.pause()
+            await pilot.press("enter")
+            await self.wait_for(pilot, lambda: app.root == self.root / "website" and app.scan.finished.is_set())
+            await pilot.press("backspace")
+            await self.wait_for(pilot, lambda: app.root == self.root and app.scan.finished.is_set())
+            app.query_one("#search", Input).value = "no-match"
+            await self.wait_for(pilot, lambda: table.row_count == 0)
+            app.query_one("#search", Input).value = "notes"
+            await self.wait_for(pilot, lambda: table.row_count == 1)
+            self.assertEqual(app.active_path, str(self.root / "notes.md"))
+            app.query_one("#search", Input).value = ""
+            await pilot.resize_terminal(80, 24)
+            await pilot.pause()
+            self.assertFalse(app.query_one("#sidebar").display)
+            self.assertFalse(app.query_one("#details").display)
+            self.assertEqual(len(table.columns), 3)
+            await pilot.resize_terminal(140, 44)
+            await pilot.pause()
+            self.assertEqual(len(table.columns), 4)
+            with patch("system_steward_tui.Path.cwd", return_value=self.root):
+                await pilot.click("#export")
+            self.assertEqual(len(list(self.root.glob("system-steward-report-*.json"))), 1)
+
+    async def test_adobe_selection_cancel_confirmation_and_results(self):
+        kept = self.put("Library/Application Support/Adobe/Common/Media Cache Files/clip.cfa")
+        cleared = self.put("Library/Caches/Adobe InDesign/frames/cache")
+        catalog = self.put("Library/Caches/Adobe InDesign/keep.lrcat")
+        app = self.app()
+        with patch("adobe_cleanup.adobe_running", return_value=False):
+            async with app.run_test(size=(140, 44)) as pilot:
+                await pilot.press("a")
+                await self.wait_for(pilot, lambda: isinstance(app.screen, CleanupScreen) and app.screen.scan
+                                    and app.screen.scan.finished.is_set() and not app.screen.query_one("#cleanup-list").disabled)
+                screen = app.screen
+                await pilot.press("c", "r")
+                self.assertIs(app.screen, screen)
+                selections = screen.query_one("#cleanup-list", SelectionList)
+                self.assertEqual(selections.selected, [])
+                self.assertTrue(screen.query_one("#review", Button).disabled)
+                await pilot.click("#purge-guide")
+                self.assertIsInstance(app.screen, InfoDialog)
+                await pilot.press("escape")
+                await pilot.click("#select-all")
+                self.assertEqual(len(selections.selected), 2)
+                await pilot.click("#select-none")
+                index = next(i for i, group in enumerate(screen.groups) if group.label == "Adobe InDesign")
+                selections.select(index)
+                await pilot.pause()
+                await pilot.click("#review")
+                self.assertIsInstance(app.screen, ConfirmDialog)
+                await pilot.click("#cancel-delete")
+                self.assertTrue(cleared.exists())
+                self.assertTrue(kept.exists())
+                await pilot.click("#review")
+                self.assertFalse(app.screen.query_one("#confirm-delete", Button).disabled)
+                self.assertEqual(len(app.screen.query(Input)), 0)
+                # Opening the dialog focuses Cancel; Enter must not delete.
+                await pilot.press("enter")
+                self.assertTrue(cleared.exists())
+                await pilot.click("#review")
+                await pilot.press("y")
+                await self.wait_for(pilot, lambda: screen.completed)
+                self.assertFalse(cleared.exists())
+                self.assertTrue(cleared.parent.parent.is_dir())
+                self.assertTrue(kept.exists())
+                self.assertTrue(catalog.exists())
+                self.assertFalse(screen.job.errors)
+                self.assertFalse(screen.query_one("#review", Button).disabled)
+                await pilot.click("#review")
+                self.assertIsInstance(app.screen, InfoDialog)
+                await pilot.press("escape")
+                await pilot.click("#cleanup-back")
+                self.assertNotIsInstance(app.screen, CleanupScreen)
+
+    async def test_chrome_scope_running_app_block_and_small_confirmation(self):
+        cookie = self.put("Library/Application Support/Google/Chrome/Default/Cookies")
+        self.put("Library/Application Support/Google/Chrome/Default/Cookies-wal")
+        self.put("Library/Caches/Google/Chrome/Default/Cache/data")
+        app = self.app()
+        with patch("chrome_cleanup.chrome_running", return_value=True):
+            async with app.run_test(size=(80, 28)) as pilot:
+                await pilot.press("c")
+                await self.wait_for(pilot, lambda: app.screen.scan and app.screen.scan.finished.is_set()
+                                    and not app.screen.query_one("#cleanup-list").disabled)
+                screen = app.screen
+                self.assertFalse(any("website data" in group.label for group in screen.groups))
+                screen.query_one("#cleanup-scope", Select).value = "sites"
+                await self.wait_for(pilot, lambda: any("website data" in group.label for group in screen.groups)
+                                    and screen.scan.finished.is_set() and not screen.query_one("#cleanup-list").disabled)
+                screen.query_one("#cleanup-list", SelectionList).select_all()
+                await pilot.pause()
+                await pilot.click("#review")
+                self.assertIsInstance(app.screen, ConfirmDialog)
+                await pilot.resize_terminal(64, 24)
+                await pilot.pause()
+                button = app.screen.query_one("#confirm-delete", Button)
+                self.assertFalse(button.disabled)
+                self.assertLessEqual(button.region.bottom, 24)
+                await pilot.click("#confirm-delete")
+                await self.wait_for(pilot, lambda: not app.screen.checking)
+                self.assertIsInstance(app.screen, ConfirmDialog)
+                self.assertIn("still running", str(app.screen.query_one("#confirm-status").render()))
+                self.assertTrue(cookie.exists())
+                self.assertIsNone(screen.job)
+                await pilot.resize_terminal(60, 20)
+                await pilot.pause()
+                self.assertTrue(button.disabled)
+                await pilot.press("escape")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.DS_Store
+system-steward-report-*.json
+.venv/
+.wheels/
+previews/
+mac-steward-report-*.json

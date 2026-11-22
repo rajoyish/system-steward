@@ -1,0 +1,5 @@
+"""Application identity shared by the CLI and terminal screens."""
+APP_NAME = "System Steward"
+AUTHOR = "Rajesh Budhathoki"
+VERSION = "3.0.0"
+BRAND = "◈  System Steward"

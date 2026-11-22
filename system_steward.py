@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""System Steward: native macOS storage, cleanup and system maintenance."""
+import argparse
+import datetime
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
+import time
+import unicodedata
+from app_identity import APP_NAME, AUTHOR, VERSION
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
+
+GROUPS = ["All", "Browsers", "Creative", "Developer", "Projects", "Desktop", "Apps"]
+GROUP_ICONS = {"All": "◉", "Browsers": "◎", "Creative": "✦", "Developer": "⌘",
+               "Projects": "▣", "Desktop": "▤", "Apps": "◇", "Folder contents": "▣"}
+STATUS_ICONS = {"queued": "·", "scanning": "◐", "done": "✓", "partial": "△",
+                "missing": "−", "unreadable": "△", "timed out": "◷", "cancelled": "×"}
+FILE_ICONS = {
+    **dict.fromkeys((".py", ".js", ".ts", ".jsx", ".tsx", ".sh", ".zsh", ".php", ".html", ".css"), "⌘"),
+    **dict.fromkeys((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".heic"), "▧"),
+    **dict.fromkeys((".mp4", ".mov", ".mkv", ".webm"), "▷"),
+    **dict.fromkeys((".mp3", ".wav", ".m4a", ".flac", ".aac"), "♫"),
+    **dict.fromkeys((".zip", ".gz", ".tar", ".7z", ".dmg"), "▥"),
+    **dict.fromkeys((".md", ".txt", ".pdf", ".docx", ".json", ".yaml", ".toml"), "≡"),
+}
+
+
+@dataclass
+class Entry:
+    name: str
+    path: str
+    group: str
+    size: int = 0
+    status: str = "queued"
+
+
+def clean(value):
+    return "".join(c if c.isprintable() and not unicodedata.combining(c) else "?" for c in str(value))
+
+
+def cell_width(text):
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
+
+
+def clip_cells(text, width):
+    result, cells = [], 0
+    for char in clean(text):
+        span = cell_width(char)
+        if cells + span > width:
+            break
+        result.append(char)
+        cells += span
+    return "".join(result)
+
+
+def entry_icon(entry, folder_view):
+    path = Path(entry.path)
+    if path.suffix.lower() == ".app":
+        return GROUP_ICONS["Apps"]
+    if not folder_view:
+        return GROUP_ICONS.get(entry.group, GROUP_ICONS["Folder contents"])
+    if path.is_dir():
+        return GROUP_ICONS["Folder contents"]
+    return FILE_ICONS.get(path.suffix.lower(), "≡")
+
+
+def pretty_path(path):
+    return clean(str(path).replace(str(Path.home()) + "/", "~/", 1))
+
+
+def size_label(size):
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if value < 1024 or unit == "PiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+
+
+def children(path, group="Projects"):
+    with os.scandir(path) as listing:
+        return [Entry(item.name, item.path, group) for item in listing if not item.is_symlink()]
+
+
+def audit_entries():
+    home = Path.home()
+    specs = [
+        ("Chrome", "/Applications/Google Chrome.app", "Browsers"),
+        ("Chrome profiles & site data", home / "Library/Application Support/Google/Chrome", "Browsers"),
+        ("Google browser cache", home / "Library/Caches/Google", "Browsers"),
+        ("Adobe · system support", "/Library/Application Support/Adobe", "Creative"),
+        ("Adobe · user support", home / "Library/Application Support/Adobe", "Creative"),
+        ("Build caches", home / ".cache", "Developer"),
+        ("Homebrew", "/opt/homebrew", "Developer"),
+        ("Codex", home / ".codex", "Developer"),
+        ("pnpm", home / "Library/pnpm", "Developer"),
+        ("VS Code", home / ".vscode", "Developer"),
+        ("npm cache", home / ".npm", "Developer"),
+        ("Gemini", home / ".gemini", "Developer"),
+        ("Microsoft Word", "/Applications/Microsoft Word.app", "Apps"),
+        ("Microsoft support", home / "Library/Application Support/Microsoft", "Apps"),
+        ("WhatsApp", "/Applications/WhatsApp.app", "Apps"),
+        ("WhatsApp media", home / "Library/Group Containers/group.net.whatsapp.WhatsApp.shared", "Apps"),
+        ("Laravel Herd", home / "Library/Application Support/Herd", "Apps"),
+    ]
+    entries = [Entry(n, str(p), g) for n, p, g in specs]
+    for folder, group, predicate in [
+        (Path("/Applications"), "Creative", lambda n: n.startswith("Adobe")),
+        (home / "sites", "Projects", lambda n: True),
+        (home / "Desktop", "Desktop", lambda n: "deploy" in n.lower()),
+        (home / "Library/Caches", "Creative", lambda n: n in ("Adobe", "Adobe InDesign")
+         or n.startswith(("Adobe Camera Raw", "com.adobe."))),
+    ]:
+        try:
+            entries.extend(e for e in children(folder, group) if predicate(e.name))
+        except OSError as exc:
+            entries.append(Entry(folder.name, str(folder), group, status=f"unavailable: {exc.strerror}"))
+    return entries
+
+
+class Scan:
+    def __init__(self, entries, timeout=120):
+        self.entries, self.timeout = entries, timeout
+        self.cancel = threading.Event()
+        self.finished = threading.Event()
+        self.started = time.monotonic()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def measure(self, entry):
+        if self.cancel.is_set() or entry.status != "queued":
+            return
+        entry.status = "scanning"
+        if not os.path.lexists(entry.path):
+            entry.status = "missing"
+            return
+        process = None
+        try:
+            process = subprocess.Popen(["du", "-sk", entry.path], stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True, errors="replace")
+            deadline = time.monotonic() + self.timeout
+            while True:
+                try:
+                    output, _ = process.communicate(timeout=0.15)
+                    break
+                except subprocess.TimeoutExpired:
+                    if self.cancel.is_set() or time.monotonic() > deadline:
+                        process.kill()
+                        process.communicate()
+                        entry.status = "cancelled" if self.cancel.is_set() else "timed out"
+                        return
+            if output.strip():
+                entry.size = int(output.split()[0]) * 1024
+                entry.status = "done" if process.returncode == 0 else "partial"
+            else:
+                entry.status = "unreadable"
+        except (OSError, ValueError):
+            entry.status = "unreadable"
+        finally:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait()
+
+    def run(self):
+        try:
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                list(pool.map(self.measure, self.entries))
+        finally:
+            self.finished.set()
+
+    def close(self):
+        self.cancel.set()
+        self.thread.join(timeout=2)
+
+
+def report(scan, root):
+    return {"created_at": datetime.datetime.now().astimezone().isoformat(),
+            "scope": str(root) if root else "curated macOS audit",
+            "measurement": "allocated bytes; partial scans may undercount",
+            "entries": [asdict(e) for e in scan.entries]}
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION} · by {AUTHOR}")
+    parser.add_argument("path", nargs="?", type=Path, help="explore a folder instead of the Mac audit")
+    parser.add_argument("--json", action="store_true", help="print a JSON report without opening the UI")
+    parser.add_argument("--timeout", type=float, default=120, help="maximum seconds per location (default: 120)")
+    args = parser.parse_args()
+    if not 0 < args.timeout < float("inf"):
+        parser.error("--timeout must be a finite number greater than zero")
+    if args.path:
+        args.path = args.path.expanduser().resolve()
+        if not args.path.is_dir():
+            parser.error(f"not a directory: {args.path}")
+    try:
+        if args.json:
+            scan = Scan(children(args.path) if args.path else audit_entries(), args.timeout)
+            try:
+                scan.finished.wait()
+                print(json.dumps(report(scan, args.path), indent=2))
+            finally:
+                scan.close()
+        elif not sys.stdin.isatty() or not sys.stdout.isatty():
+            parser.error("the interactive UI needs a terminal; use --json for scripts")
+        else:
+            try:
+                from system_steward_tui import SystemStewardApp
+            except ModuleNotFoundError as exc:
+                if exc.name not in ("textual", "rich"):
+                    raise
+                print("Install the terminal UI with ./setup, then run ./system-steward", file=sys.stderr)
+                return 1
+            SystemStewardApp(root=args.path, timeout=args.timeout).run()
+    except KeyboardInterrupt:
+        return 130
+    except OSError as exc:
+        print(f"System Steward: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

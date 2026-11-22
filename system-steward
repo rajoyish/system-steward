@@ -1,0 +1,6 @@
+#!/bin/zsh
+project_dir="${0:A:h}"
+if [[ -x "$project_dir/.venv/bin/python" ]]; then
+  exec "$project_dir/.venv/bin/python" "$project_dir/system_steward.py" "$@"
+fi
+exec python3 "$project_dir/system_steward.py" "$@"
