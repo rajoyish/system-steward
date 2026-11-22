@@ -169,9 +169,34 @@ Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d
 - **When an existing PID exits:** enter a running process ID. An optional timer ends the session earlier. Stopping Keep Awake leaves the watched process running.
 - **When a command finishes:** enter a command and its working folder. The command runs in the background with no interactive input; recent output and its exit status appear in the tool. Quoted arguments are supported. Shell operators and expansions are not interpreted. This mode follows the command instead of a timer.
 
+### Background execution and memory optimization
+
+By default, Keep Awake runs in the background as a detached process:
+- **Persists after closing terminal:** You can safely close Warp, PowerShell, or the terminal window; Keep Awake continues running uninterrupted in the background.
+- **Ultra-low memory usage:** Standalone Keep Awake uses only ~2-4 MB of RAM (a 99% reduction compared to keeping the entire ~450 MB terminal TUI open). Working set memory pages are automatically trimmed.
+- **Turns off with computer:** When your computer shuts down or turns off, the background session ends automatically and Windows power states reset naturally. No permanent registry or startup entries are created.
+
+### Command-line and PowerShell shortcuts
+
+You can also start, check, and stop Keep Awake directly without launching the full TUI:
+
+```powershell
+# Quick launcher
+pwsh -File .\keep-awake.ps1                   # Start Keep Awake in background
+pwsh -File .\keep-awake.ps1 -Display          # Prevent display sleep as well
+pwsh -File .\keep-awake.ps1 -Duration 3600    # Run for 1 hour
+pwsh -File .\keep-awake.ps1 -Status           # Check status and memory usage
+pwsh -File .\keep-awake.ps1 -Stop             # Stop session
+
+# Via system-steward launcher
+pwsh -File .\system-steward.ps1 -Awake
+pwsh -File .\system-steward.ps1 -Awake -Stop
+pwsh -File .\system-steward.ps1 -Awake -Status
+```
+
 Choose **Review & start** and inspect the exact command before confirming. Only one app-managed session runs at a time. You can return to storage browsing while it runs; the sidebar shows when Keep Awake is active. Reopen the tool to see its PID, remaining time, and output, or choose **Stop session**.
 
-App-managed sessions stop when you quit System Steward. **Stopping a wrapped-command session or quitting the app also terminates that command and its process group**, with confirmation. The operating system still controls explicit Sleep, lid-close behavior, and low-battery sleep. Preventing disk idle sleep is a request, not continuous disk activity.
+Stopping a wrapped-command session or quitting the app during command execution also terminates that command and its process group, with confirmation. The operating system still controls explicit Sleep, lid-close behavior, and low-battery sleep. Preventing disk idle sleep is a request, not continuous disk activity.
 
 ## System maintenance and readings
 

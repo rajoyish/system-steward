@@ -837,10 +837,12 @@ class SystemStewardApp(App):
         await self.finish_quit()
 
     async def finish_quit(self):
-        await asyncio.to_thread(self.awake.stop)
+        if not (self.awake.running and getattr(self.awake, "background", False)):
+            await asyncio.to_thread(self.awake.stop)
         await self.pause_scan()
         self.exit()
 
     async def on_unmount(self):
-        await asyncio.to_thread(self.awake.stop)
+        if not (self.awake.running and getattr(self.awake, "background", False)):
+            await asyncio.to_thread(self.awake.stop)
         await self.pause_scan()

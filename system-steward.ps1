@@ -4,6 +4,12 @@
 #>
 [CmdletBinding()]
 param(
+    [switch]$Awake,
+    [switch]$KeepAwake,
+    [switch]$Stop,
+    [switch]$Status,
+    [switch]$Display,
+    [int]$Duration,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ScriptArgs
 )
@@ -39,5 +45,19 @@ if (Test-Path -LiteralPath $VenvPython) {
 }
 
 $MainScript = Join-Path $ProjectDir "system_steward.py"
-& $PythonExe $MainScript @ScriptArgs
+$ForwardArgs = @()
+if ($Awake -or $KeepAwake) {
+    $ForwardArgs += "--keep-awake"
+    if ($Display) { $ForwardArgs += "--display" }
+    if ($Duration -gt 0) { $ForwardArgs += @("-t", "$Duration") }
+} elseif ($Stop) {
+    $ForwardArgs += "--stop-awake"
+} elseif ($Status) {
+    $ForwardArgs += "--status-awake"
+}
+if ($ScriptArgs) {
+    $ForwardArgs += $ScriptArgs
+}
+
+& $PythonExe $MainScript @ForwardArgs
 exit $LASTEXITCODE

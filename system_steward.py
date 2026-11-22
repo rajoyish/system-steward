@@ -281,7 +281,48 @@ def main():
     parser.add_argument("path", nargs="?", type=Path, help="explore a folder instead of the system audit")
     parser.add_argument("--json", action="store_true", help="print a JSON report without opening the UI")
     parser.add_argument("--timeout", type=float, default=120, help="maximum seconds per location (default: 120)")
+    parser.add_argument("-k", "--keep-awake", "--awake", action="store_true", help="start Keep Awake in background and exit")
+    parser.add_argument("--stop-awake", action="store_true", help="stop active Keep Awake background session")
+    parser.add_argument("--status-awake", action="store_true", help="check Keep Awake background status")
+    parser.add_argument("--display", action="store_true", help="prevent display sleep in addition to system sleep")
+    parser.add_argument("-t", "--duration", type=int, default=None, help="timer duration in seconds for keep awake")
     args = parser.parse_args()
+
+    if args.stop_awake:
+        from keep_awake import AwakeSession
+        session = AwakeSession()
+        if not session.running:
+            print("No active Keep Awake session found.")
+            return 0
+        session.stop()
+        print("✓ Keep Awake session stopped.")
+        return 0
+
+    if args.status_awake:
+        from keep_awake import AwakeSession
+        session = AwakeSession()
+        print(session.status())
+        return 0
+
+    if args.keep_awake:
+        from keep_awake import AwakeSession, plan_session
+        session = AwakeSession()
+        if session.running:
+            print(f"Keep Awake is already active: {session.status()}")
+            return 0
+        flags = ["i"]
+        if args.display:
+            flags.append("d")
+        dur = str(args.duration) if args.duration else ""
+        plan = plan_session(flags=flags, mode="manual", duration=dur, background=True)
+        session.start(plan)
+        print(f"✓ {session.status()}")
+        print("  Memory: ~2-4 MB (optimized, 99% less than terminal TUI).")
+        print("  Persistence: Keeps running even if terminal closes.")
+        print("  Shutdown: Turns off automatically when computer turns off.")
+        print("  To stop: pwsh -File .\\keep-awake.ps1 -Stop  (or --stop-awake)")
+        return 0
+
     if not 0 < args.timeout < float("inf"):
         parser.error("--timeout must be a finite number greater than zero")
     if args.path:

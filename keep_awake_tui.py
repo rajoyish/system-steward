@@ -44,6 +44,7 @@ class KeepAwakeScreen(Screen):
             yield Checkbox("Idle system sleep (-i)", value=True, id="awake-idle")
             yield Checkbox("Display sleep (-d)", id="awake-display")
             yield Checkbox("Disk idle sleep (-m)", id="awake-disk")
+            yield Checkbox("Run in background (persists after closing terminal/app)", value=True, id="awake-background")
             yield Label("Session ends", classes="eyebrow")
             yield Select([("When stopped / timer ends", "manual"), ("When an existing PID exits", "process"),
                 ("When a command finishes", "command")], value="manual", allow_blank=False, id="awake-mode")
@@ -69,6 +70,8 @@ class KeepAwakeScreen(Screen):
             self.query_one("#awake-mode", Select).value = plan.mode
             for flag, name in (("i", "idle"), ("d", "display"), ("m", "disk")):
                 self.query_one(f"#awake-{name}", Checkbox).value = flag in plan.argv[1]
+            if hasattr(plan, "background") and self.query("#awake-background"):
+                self.query_one("#awake-background", Checkbox).value = plan.background
             self.query_one("#awake-duration", Input).value = str(plan.seconds) if plan.seconds else ""
             self.query_one("#awake-cwd", Input).value = str(plan.cwd)
             if plan.mode == "process":
@@ -83,11 +86,13 @@ class KeepAwakeScreen(Screen):
     def configure_mode(self):
         mode = self.query_one("#awake-mode", Select).value
         for name, visible in {"duration": mode != "command", "pid": mode == "process",
-                "command": mode == "command", "cwd": mode == "command"}.items():
-            self.query_one(f"#awake-{name}").display = visible
-            self.query_one(f"#awake-{name}-label").display = visible
+                "command": mode == "command", "cwd": mode == "command", "background": mode != "command"}.items():
+            if self.query(f"#awake-{name}"):
+                self.query_one(f"#awake-{name}").display = visible
+            if self.query(f"#awake-{name}-label"):
+                self.query_one(f"#awake-{name}-label").display = visible
         note = {
-            "manual": "Use Stop session to end early. Preventing idle sleep does not override closing the lid or choosing Sleep.",
+            "manual": "Use Stop session to end early. Background sessions persist when terminal closes (~2-4 MB memory) and turn off on shutdown.",
             "process": "Stops when this PID exits or the timer expires. Stopping this session leaves the watched process running.",
             "command": "Runs in the background without interactive input. Quotes group arguments; shell operators and expansions are not interpreted. Timer is unavailable. Stopping the session or quitting the app also stops the command."
         }.get(mode, "")
@@ -113,16 +118,21 @@ class KeepAwakeScreen(Screen):
             flags = [flag for flag, name in (("i", "idle"), ("d", "display"), ("m", "disk"))
                 if self.query_one(f"#awake-{name}", Checkbox).value]
             mode = self.query_one("#awake-mode", Select).value
+            background = self.query_one("#awake-background", Checkbox).value if mode != "command" and self.query("#awake-background") else False
             plan = plan_session(flags, mode,
                 duration=self.query_one("#awake-duration", Input).value if mode != "command" else "",
                 pid=self.query_one("#awake-pid", Input).value,
                 command=self.query_one("#awake-command", Input).value,
-                cwd=self.query_one("#awake-cwd", Input).value if mode == "command" else None)
+                cwd=self.query_one("#awake-cwd", Input).value if mode == "command" else None,
+                background=background)
         except (ValueError, OSError) as exc:
             self.notify(str(exc), severity="error")
             return
         details = "Command:\n" + plan.command + "\n\nWorking folder:\n" + str(plan.cwd)
-        details += "\n\nNo power settings are changed. Leaving this screen keeps the session running. Quitting the app stops it."
+        if background:
+            details += "\n\nRuns in background (~2-4 MB RAM). Remains active even if you close the terminal or quit System Steward, and turns off when your computer turns off."
+        else:
+            details += "\n\nNo power settings are changed. Leaving this screen keeps the session running. Quitting the app stops it."
         if mode == "command":
             details += "\n\nThis runs the entered command with your user permissions and no interactive input. Stop session and app exit also terminate that command and its process group."
         self.app.push_screen(MaintenanceConfirm("Start Keep Awake?", details, "Start session"),
@@ -131,6 +141,8 @@ class KeepAwakeScreen(Screen):
     def start_session(self, plan):
         try:
             self.session.start(plan)
+            if getattr(plan, "background", False):
+                self.notify("Keep Awake active in background. Terminal and app can be closed safely.", title="Keep Awake")
         except (ValueError, OSError, RuntimeError) as exc:
             self.notify(str(exc), severity="error")
         self.refresh_session()

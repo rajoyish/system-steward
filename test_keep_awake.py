@@ -157,6 +157,44 @@ class WindowsCaffeinateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertGreaterEqual(elapsed, 0.4)
 
+    def test_windows_caffeinate_memory_trim_and_mb(self):
+        import windows_caffeinate
+        import os
+        windows_caffeinate.trim_memory()
+        mem = windows_caffeinate.get_process_memory_mb(os.getpid())
+        if mem is not None:
+            self.assertGreater(mem, 0)
+
+    def test_background_session_persisted_and_restored(self):
+        watched = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                state_file = Path(td) / "awake_session.json"
+                with patch("keep_awake.get_state_file", return_value=state_file):
+                    from keep_awake import save_persisted_state, read_persisted_state
+                    save_persisted_state({
+                        "pid": watched.pid,
+                        "started": time.time(),
+                        "mode": "manual",
+                        "duration": None,
+                        "display": False,
+                        "background": True
+                    })
+                    data = read_persisted_state()
+                    self.assertIsNotNone(data)
+                    self.assertEqual(data["pid"], watched.pid)
+
+                    session = AwakeSession()
+                    self.assertTrue(session.running)
+                    self.assertTrue(session.background)
+                    self.assertIn("background", session.status())
+                    session.stop()
+                    self.assertFalse(session.running)
+                    self.assertFalse(state_file.exists())
+        finally:
+            watched.terminate()
+            watched.wait(timeout=5)
+
 
 class AwakeUITests(unittest.IsolatedAsyncioTestCase):
     async def wait_for(self, pilot, predicate):
