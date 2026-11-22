@@ -1,0 +1,135 @@
+# Builds and publishes a release, then updates every install channel.
+#
+# Trigger: push a tag matching app_identity.VERSION, e.g.  git tag v3.0.0 && git push origin v3.0.0
+#
+#   source   -> system-steward-X.tar.gz             (Homebrew, install.sh)
+#   windows  -> system-steward-X-windows-x64.zip     (Scoop, install.ps1)
+#               system-steward-X-windows-x64-setup.exe (winget)
+#   publish  -> GitHub release + checksums.txt, then commits the rendered Homebrew formula,
+#               Scoop manifest (bucket/ and GitHub Pages) and winget manifests to master
+#   winget   -> opens a pull request on microsoft/winget-pkgs when the WINGET_TOKEN secret is set
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (must equal app_identity.VERSION, without the leading v)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - id: version
+        env:
+          REQUESTED: ${{ inputs.version || github.ref_name }}
+        run: |
+          version="${REQUESTED#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          python packaging/release.py source "$version" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: source
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  windows:
+    needs: source
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - shell: pwsh
+        run: ./packaging/windows/build.ps1 -Version "${{ needs.source.outputs.version }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: error
+
+  publish:
+    needs: [source, windows]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.source.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > checksums.txt && cat checksums.txt
+      - name: GitHub release
+        run: |
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            gh release upload "v$VERSION" dist/* --clobber
+          else
+            gh release create "v$VERSION" dist/* --target master --title "System Steward $VERSION" --generate-notes
+          fi
+      - name: Update Homebrew formula, Scoop manifest and winget manifests
+        run: |
+          python packaging/release.py render "$VERSION" dist/checksums.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula bucket docs/system-steward.json packaging/winget
+          if git diff --cached --quiet; then
+            echo "Manifests already up to date."
+          else
+            git commit -m "chore(release): publish $VERSION to Homebrew, Scoop and winget"
+            git push origin HEAD:master
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests
+          path: packaging/winget/manifests/r/RajeshBudhathoki/SystemSteward/${{ needs.source.outputs.version }}
+
+  winget:
+    needs: [source, publish]
+    runs-on: windows-latest
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: winget-manifests
+          path: manifests
+      - name: Submit to microsoft/winget-pkgs
+        shell: pwsh
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Host "WINGET_TOKEN is not set; skipping. Submit manually with: wingetcreate submit <manifest folder>"
+            exit 0
+          }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe submit --token $env:WINGET_TOKEN manifests

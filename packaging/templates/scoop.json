@@ -1,0 +1,26 @@
+{
+    "version": "{{VERSION}}",
+    "description": "{{DESCRIPTION}}",
+    "homepage": "{{HOMEPAGE}}",
+    "license": "{{LICENSE}}",
+    "notes": "Run 'system-steward' in a new terminal. 'system-steward --help' lists command-line options.",
+    "architecture": {
+        "64bit": {
+            "url": "{{BUNDLE_URL}}",
+            "hash": "{{BUNDLE_SHA256}}"
+        }
+    },
+    "extract_dir": "system-steward",
+    "bin": "system-steward.cmd",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/{{REPO}}/releases/download/v$version/system-steward-$version-windows-x64.zip"
+            }
+        },
+        "hash": {
+            "url": "$baseurl/checksums.txt"
+        }
+    }
+}

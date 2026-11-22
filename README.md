@@ -5,7 +5,48 @@ A terminal app for understanding disk usage, reviewing cleanup targets, and mana
 
 **Available on: Windows and macOS.** All features are natively implemented across platforms: **PowerShell 7 (`pwsh`)**, **Scoop**, and Win32 APIs via Python `ctypes` on Windows, and Darwin Mach APIs on macOS.
 
-## Get started
+## Install
+
+Install page: **https://rajoyish.github.io/system-steward/**. No clone needed.
+
+### macOS
+
+```zsh
+# Homebrew
+brew tap rajoyish/system-steward https://github.com/rajoyish/system-steward
+brew install system-steward
+
+# or the one-line installer (needs Python 3.10+)
+curl -fsSL https://rajoyish.github.io/system-steward/install.sh | sh
+```
+
+### Windows
+
+These builds bundle their own Python, so nothing else needs to be installed.
+
+```powershell
+# winget
+winget install RajeshBudhathoki.SystemSteward
+
+# Scoop
+scoop bucket add system-steward https://github.com/rajoyish/system-steward
+scoop install system-steward
+
+# or the one-line installer
+irm https://rajoyish.github.io/system-steward/install.ps1 | iex
+```
+
+Then run `system-steward` in a new terminal.
+
+| Channel | Update | Uninstall |
+| --- | --- | --- |
+| Homebrew | `brew upgrade system-steward` | `brew uninstall system-steward` |
+| winget | `winget upgrade RajeshBudhathoki.SystemSteward` | `winget uninstall RajeshBudhathoki.SystemSteward` |
+| Scoop | `scoop update system-steward` | `scoop uninstall system-steward` |
+| `install.sh` | run it again | `curl -fsSL https://rajoyish.github.io/system-steward/install.sh \| sh -s -- --uninstall` |
+| `install.ps1` | run it again | `& ([scriptblock]::Create((irm https://rajoyish.github.io/system-steward/install.ps1))) -Uninstall` |
+
+## Run from source
 
 ### Windows (PowerShell 7 & Scoop)
 
@@ -260,6 +301,21 @@ Non-UI modules carry type hints on every function, and ruff's `ANN` rules keep i
 
 Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse interaction, resizing, cleanup selection and confirmation, running-app blocking, maintenance, Keep Awake sessions, and system readings. Cleanup tests use temporary fake profiles and folders instead of real Chrome or Adobe data, and Keep Awake tests use a throwaway state folder, so a test run never touches your real session.
 
+### Releasing
+
+Releases are built and published by `.github/workflows/release.yml`:
+
+1. Set `VERSION` in `app_identity.py`, commit, and push.
+2. Tag and push: `git tag v3.0.1 && git push origin v3.0.1`.
+
+The workflow then:
+- builds the source archive (Homebrew, `install.sh`), the self-contained Windows zip (Scoop, `install.ps1`; embedded CPython plus the pinned wheels) and the per-user Windows installer (winget);
+- publishes them to a GitHub release with `checksums.txt`;
+- commits the rendered `Formula/system-steward.rb`, `bucket/system-steward.json` and winget manifests to `master` (templates live in `packaging/templates/`; `packaging/release.py` renders them);
+- opens the winget-pkgs pull request when the `WINGET_TOKEN` repository secret holds a GitHub token with `public_repo` scope.
+
+The install page and scripts live in `docs/`, served by GitHub Pages from `master` → `/docs`.
+
 ### Project layout
 
 | Path | Role |
@@ -273,3 +329,7 @@ Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse inte
 | `keep_awake.py`, `awake_state.py`, `windows_caffeinate.py` | Keep Awake sessions, the verified session record, the Windows helper |
 | `platforms/` | Every OS call: `windows.py` (Win32 via `ctypes`) and `darwin.py` |
 | `strings.py` | Wording that differs between Windows and macOS |
+
+## License
+
+[MIT](LICENSE) © Rajesh Budhathoki

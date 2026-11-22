@@ -6,3 +6,4 @@ system-steward-report-*.json
 .wheels/
 previews/
 mac-steward-report-*.json
+dist/

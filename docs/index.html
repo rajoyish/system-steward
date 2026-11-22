@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>System Steward</title>
+<meta name="description" content="A terminal app for storage analysis, cleanup and system maintenance on macOS and Windows. Install with Homebrew, Scoop, winget or one command.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M8 1l7 7-7 7-7-7z' fill='%2371e5bb'/></svg>">
+<style>
+  :root {
+    --bg: #f6f8fa; --surface: #ffffff; --code: #eef2f5; --border: #d5dde4;
+    --text: #15202a; --muted: #56697a; --accent: #0f8a63; --accent-soft: #dff5ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0c1218; --surface: #121c25; --code: #0f171f; --border: #293b4a;
+      --text: #dde7ef; --muted: #8395a5; --accent: #71e5bb; --accent-soft: #17302a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0c1218; --surface: #121c25; --code: #0f171f; --border: #293b4a;
+    --text: #dde7ef; --muted: #8395a5; --accent: #71e5bb; --accent-soft: #17302a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 56px 16px 64px; }
+  .brand { display: flex; align-items: center; gap: 10px; color: var(--accent); font-weight: 700; letter-spacing: .02em; }
+  .brand svg { width: 18px; height: 18px; }
+  h1 { font-size: clamp(28px, 5vw, 40px); line-height: 1.15; margin: 18px 0 10px; }
+  .lede { color: var(--muted); font-size: 18px; margin: 0 0 8px; }
+  .author { color: var(--muted); margin: 0 0 36px; }
+  .author strong { color: var(--text); }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 40px 0 12px; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tab { appearance: none; border: 0; background: none; color: var(--muted); font: inherit; font-weight: 600;
+         padding: 10px 14px; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab:focus-visible, .copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .panel[hidden] { display: none; }
+  .method { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .method h3 { margin: 0 0 8px; font-size: 15px; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .method h3 span { color: var(--muted); font-weight: 400; font-size: 14px; }
+  .cmd { display: flex; align-items: flex-start; gap: 8px; background: var(--code); border-radius: 8px; padding: 10px 10px 10px 14px; }
+  .cmd + .cmd { margin-top: 6px; }
+  .cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: pre; padding-top: 3px;
+              font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .copy { flex: none; appearance: none; border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+          font: 13px/1 inherit; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+  .copy:hover { color: var(--text); }
+  .copy.done { color: var(--accent); border-color: var(--accent); }
+  .note { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+  ul.features { padding-left: 20px; margin: 0; }
+  ul.features li { margin: 6px 0; }
+  a { color: var(--accent); }
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 14px;
+           display: flex; gap: 16px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1l7 7-7 7-7-7z" fill="currentColor"/></svg>
+    System Steward
+  </div>
+  <h1>Your system, with room to breathe.</h1>
+  <p class="lede">A terminal app for understanding disk usage, reviewing cleanup targets and running system maintenance on macOS and Windows.</p>
+  <p class="author">by <strong>Rajesh Budhathoki</strong></p>
+
+  <h2>Install</h2>
+  <div class="tabs" role="tablist" aria-label="Operating system">
+    <button class="tab" role="tab" id="tab-macos" aria-controls="panel-macos" aria-selected="true">macOS</button>
+    <button class="tab" role="tab" id="tab-windows" aria-controls="panel-windows" aria-selected="false" tabindex="-1">Windows</button>
+  </div>
+
+  <section class="panel" id="panel-macos" role="tabpanel" aria-labelledby="tab-macos">
+    <div class="method">
+      <h3>Homebrew <span>recommended</span></h3>
+      <div class="cmd"><code>brew tap rajoyish/system-steward https://github.com/rajoyish/system-steward
+brew install system-steward</code><button class="copy">Copy</button></div>
+    </div>
+    <div class="method">
+      <h3>curl <span>needs Python 3.10+</span></h3>
+      <div class="cmd"><code>curl -fsSL https://rajoyish.github.io/system-steward/install.sh | sh</code><button class="copy">Copy</button></div>
+      <p class="note">Installs into <code>~/.local/share/system-steward</code> with a launcher in <code>~/.local/bin</code>. Remove with <code>… | sh -s -- --uninstall</code>.</p>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-windows" role="tabpanel" aria-labelledby="tab-windows" hidden>
+    <div class="method">
+      <h3>winget</h3>
+      <div class="cmd"><code>winget install RajeshBudhathoki.SystemSteward</code><button class="copy">Copy</button></div>
+    </div>
+    <div class="method">
+      <h3>Scoop</h3>
+      <div class="cmd"><code>scoop bucket add system-steward https://github.com/rajoyish/system-steward
+scoop install system-steward</code><button class="copy">Copy</button></div>
+    </div>
+    <div class="method">
+      <h3>PowerShell</h3>
+      <div class="cmd"><code>irm https://rajoyish.github.io/system-steward/install.ps1 | iex</code><button class="copy">Copy</button></div>
+      <p class="note">Bundles its own Python; nothing else to install. Installs per user, no administrator rights.</p>
+    </div>
+  </section>
+
+  <h2>Run</h2>
+  <div class="cmd"><code>system-steward</code><button class="copy">Copy</button></div>
+  <p class="note">Open a new terminal after installing. <code>system-steward --help</code> lists options such as <code>--json</code> reports and <code>--keep-awake</code>.</p>
+
+  <h2>What it does</h2>
+  <ul class="features">
+    <li><strong>Dashboard:</strong> live CPU, memory, disk, network, battery, uptime and top processes.</li>
+    <li><strong>Storage explorer:</strong> browse folders by size, search, and export JSON reports.</li>
+    <li><strong>Cleanup:</strong> Chrome and Adobe caches, temporary files, developer artifacts and old installers, always previewed before removal.</li>
+    <li><strong>Maintenance:</strong> flush DNS, rebuild caches and indexes; Keep Awake to prevent sleep.</li>
+  </ul>
+
+  <footer>
+    <a href="https://github.com/rajoyish/system-steward">Source on GitHub</a>
+    <a href="https://github.com/rajoyish/system-steward/releases">Releases</a>
+    <span>MIT License · © Rajesh Budhathoki</span>
+  </footer>
+</main>
+<script>
+  const tabs = [...document.querySelectorAll('.tab')];
+  function select(tab) {
+    tabs.forEach(t => {
+      const on = t === tab;
+      t.setAttribute('aria-selected', on);
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+    });
+  }
+  tabs.forEach((tab, i) => {
+    tab.addEventListener('click', () => select(tab));
+    tab.addEventListener('keydown', e => {
+      const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      if (step) { const next = tabs[(i + step + tabs.length) % tabs.length]; select(next); next.focus(); }
+    });
+  });
+  if (/Windows/i.test(navigator.userAgent)) select(document.getElementById('tab-windows'));
+  document.querySelectorAll('.copy').forEach(button => {
+    button.addEventListener('click', async () => {
+      const text = button.previousElementSibling.textContent;
+      try { await navigator.clipboard.writeText(text); } catch (e) { return; }
+      button.textContent = 'Copied'; button.classList.add('done');
+      setTimeout(() => { button.textContent = 'Copy'; button.classList.remove('done'); }, 1500);
+    });
+  });
+</script>
+</body>
+</html>
