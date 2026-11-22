@@ -1,6 +1,4 @@
 """Native metric parsing and privileged plan tests; never modify real PAM files."""
-import asyncio
-from dataclasses import replace
 from pathlib import Path
 import shutil
 import subprocess
@@ -12,8 +10,17 @@ from unittest.mock import AsyncMock, patch
 import native_maintenance
 import system_actions
 from system_status import (
-    cpu_usage, network_rates, parse_battery, parse_netstat, parse_netstat_windows,
-    parse_vm_stats, resource_score, SystemSampler, windows_cpu_usage, windows_drives, WindowsHost
+    SystemSampler,
+    WindowsHost,
+    cpu_usage,
+    network_rates,
+    parse_battery,
+    parse_netstat,
+    parse_netstat_windows,
+    parse_vm_stats,
+    resource_score,
+    windows_cpu_usage,
+    windows_drives,
 )
 
 
@@ -78,7 +85,9 @@ class WindowsMetricTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "native Windows APIs")
     def test_native_process_and_network_readings(self):
-        import ctypes, os
+        import ctypes
+        import os
+
         from platforms import windows as winproc
         self.assertEqual(ctypes.sizeof(winproc.MIB_IF_ROW2), 1352)  # netioapi.h layout guard
         self.assertEqual(winproc.MIB_IF_TABLE2.Table.offset, 8)

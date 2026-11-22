@@ -1,5 +1,5 @@
 """Run with: python3 -m unittest -v"""
-import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -10,8 +10,9 @@ import time
 import unittest
 from unittest.mock import patch
 
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import system_steward
-from system_steward import Entry, Scan, children, du_command, pretty_path, audit_entries
+from system_steward import Entry, Scan, audit_entries, children, du_command, pretty_path
 
 
 class ScannerTests(unittest.TestCase):
@@ -20,11 +21,9 @@ class ScannerTests(unittest.TestCase):
             root = Path(folder)
             (root / "directory with spaces").mkdir()
             (root / "directory with spaces" / "data").write_bytes(b"x" * 65536)
-            try:
+            # A symlink (where the OS allows creating one) must be left out of the listing.
+            with contextlib.suppress(OSError, NotImplementedError):
                 (root / "link").symlink_to(root / "directory with spaces", target_is_directory=True)
-                has_symlink = True
-            except (OSError, NotImplementedError):
-                has_symlink = False
             entries = children(root)
             self.assertEqual([e.name for e in entries], ["directory with spaces"])
             entries.append(Entry("missing", str(root / "absent"), "Projects"))
@@ -57,7 +56,7 @@ class ScannerTests(unittest.TestCase):
             with self.subTest(cancel=cancel), tempfile.TemporaryDirectory() as folder:
                 processes = []
 
-                def slow_process(*args, **kwargs):
+                def slow_process(*args, processes=processes, **kwargs):
                     process = real_popen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
                     processes.append(process)
                     return process
@@ -99,7 +98,8 @@ class InProcessScanTests(unittest.TestCase):
         self.assertEqual(scan.entries[0].size, cluster * (1 + -(-5000 // cluster)))
 
     def test_cloud_placeholders_and_compressed_files(self):
-        stat = lambda size, attributes: type("S", (), {"st_size": size, "st_file_attributes": attributes})()
+        def stat(size, attributes):
+            return type("S", (), {"st_size": size, "st_file_attributes": attributes})()
         self.assertEqual(system_steward.allocated_bytes(stat(10 ** 9, system_steward.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS), "x", 4096), 0)
         self.assertEqual(system_steward.allocated_bytes(stat(10 ** 9, system_steward.FILE_ATTRIBUTE_OFFLINE), "x", 4096), 0)
         with patch("system_steward.windows_on_disk_size", return_value=5000) as on_disk:

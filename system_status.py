@@ -2,6 +2,7 @@
 
 The OS calls themselves live in platforms.windows / platforms.darwin.
 """
+from collections.abc import Callable, Sequence
 import datetime
 import os
 from pathlib import Path
@@ -10,11 +11,17 @@ import shutil
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING, Any
 
 from platforms.darwin import Host as MacHost
 
+if TYPE_CHECKING:
+    from platforms.windows import Host as WindowsMetricsHost
 
-def WindowsHost():
+Counters = dict[str, tuple[int, int]]
+
+
+def WindowsHost() -> "WindowsMetricsHost":  # class-like name kept: tests and callers construct it
     """Windows metrics host (platforms.windows.Host); OSError elsewhere, like MacHost off macOS."""
     if sys.platform != "win32":
         raise OSError("Live system metrics require Windows")
@@ -22,12 +29,12 @@ def WindowsHost():
     return Host()
 
 
-def windows_drives():
+def windows_drives() -> list[dict[str, Any]]:
     from platforms.windows import drives
     return drives()
 
 
-def command(argv, timeout=5):
+def command(argv: Sequence[str], timeout: float = 5) -> str:
     result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, errors="replace", timeout=timeout,
                             env={**os.environ, "LC_ALL": "C"})
@@ -36,13 +43,13 @@ def command(argv, timeout=5):
     return result.stdout
 
 
-def cpu_usage(before, after):
-    delta = [(end - start) & 0xffffffff for start, end in zip(before, after)]
+def cpu_usage(before: Sequence[int], after: Sequence[int]) -> float | None:
+    delta = [(end - start) & 0xffffffff for start, end in zip(before, after, strict=True)]
     total = sum(delta)
     return max(0, min(100, 100 * (total - delta[2]) / total)) if total else None
 
 
-def windows_cpu_usage(before, after):
+def windows_cpu_usage(before: Sequence[int], after: Sequence[int]) -> float:
     idle = after[0] - before[0]
     kernel = after[1] - before[1]
     user = after[2] - before[2]
@@ -53,7 +60,7 @@ def windows_cpu_usage(before, after):
     return max(0.0, min(100.0, (busy / total_sys) * 100.0))
 
 
-def parse_vm_stats(output, total):
+def parse_vm_stats(output: str, total: int) -> dict[str, Any]:
     page_match = re.search(r"page size of (\d+) bytes", output)
     if not page_match:
         raise ValueError("Unrecognized VM page size")
@@ -70,7 +77,7 @@ def parse_vm_stats(output, total):
             "definition": "Active + wired + physical compressor pages; excludes inactive cache. May differ from Activity Monitor's accounting."}
 
 
-def parse_netstat(output):
+def parse_netstat(output: str) -> Counters:
     lines = output.splitlines()
     if not lines:
         raise ValueError("No network counters")
@@ -91,14 +98,14 @@ def parse_netstat(output):
     return counters
 
 
-def parse_netstat_windows(output):
+def parse_netstat_windows(output: str) -> Counters:
     match = re.search(r"Bytes\s+(\d+)\s+(\d+)", output)
     if match:
         return {"Ethernet/Wi-Fi": (int(match.group(1)), int(match.group(2)))}
     return {}
 
 
-def network_rates(previous, current, elapsed):
+def network_rates(previous: Counters | None, current: Counters, elapsed: float) -> list[dict[str, Any]]:
     rows = []
     for name, (rx, tx) in current.items():
         old = previous.get(name) if previous is not None else None
@@ -109,7 +116,7 @@ def network_rates(previous, current, elapsed):
     return rows
 
 
-def parse_battery(output):
+def parse_battery(output: str) -> list[dict[str, Any]]:
     result = []
     for line in output.splitlines():
         match = re.search(r"(\d+)%;\s*([^;]+);?\s*(.*)", line)
@@ -121,7 +128,7 @@ def parse_battery(output):
     return result
 
 
-def resource_score(data):
+def resource_score(data: dict[str, Any]) -> tuple[int | None, str]:
     """Transparent heuristic, not a hardware diagnostic or vendor health metric."""
     cpu = data.get("cpu", {}).get("usage")
     memory = data.get("memory", {}).get("used_percent")
@@ -139,7 +146,7 @@ def resource_score(data):
 
 
 class SystemSampler:
-    def __init__(self, platform=None):
+    def __init__(self, platform: str | None = None) -> None:
         # "win32" or "darwin"; injectable so either backend can be exercised on any host.
         self.platform = platform or sys.platform
         self.previous_network = None
@@ -147,12 +154,12 @@ class SystemSampler:
         self.previous_processes = None  # (monotonic time, windows.usage_snapshot())
         self.hardware = None
 
-    def sample(self):
+    def sample(self) -> dict[str, Any]:
         warnings = []
         data = {"collected_at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
                 "cpu": {}, "memory": {}, "disks": [], "batteries": [], "network": [],
                 "top_processes": [], "hardware": {}, "unavailable": {}}
-        def attempt(label, operation):
+        def attempt(label: str, operation: Callable[[], Any]) -> Any:
             try:
                 return operation()
             except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -169,7 +176,7 @@ class SystemSampler:
                     snapshot = attempt("Processes", windows.usage_snapshot)
                     self.previous_processes = (time.monotonic(), snapshot) if snapshot is not None else None
 
-                def cpu():
+                def cpu() -> dict[str, Any]:
                     before = host.cpu_ticks()
                     time.sleep(.15)
                     after = host.cpu_ticks()
@@ -186,7 +193,7 @@ class SystemSampler:
                 if seconds is not None:
                     data["uptime"] = f"{seconds // 86400}d {seconds // 3600 % 24}h {seconds // 60 % 60}m"
                 data["disks"] = attempt("Disks", windows_drives) or []
-                def network():
+                def network() -> list[dict[str, Any]]:
                     try:
                         counters = windows.interface_counters()
                     except OSError:
@@ -198,7 +205,7 @@ class SystemSampler:
                     return result
                 data["network"] = attempt("Network", network) or []
                 data["batteries"] = attempt("Battery", host.power_status) or []
-                def processes():
+                def processes() -> list[dict[str, Any]]:
                     # CPU share between this sample and the previous one (percent of total capacity),
                     # not cumulative CPU seconds since each process started.
                     now, snapshot = time.monotonic(), windows.usage_snapshot()
@@ -217,7 +224,7 @@ class SystemSampler:
         # Darwin / macOS host
         host = attempt("System APIs", MacHost)
         if host:
-            def cpu():
+            def cpu() -> dict[str, Any]:
                 before = host.cpu_ticks()
                 time.sleep(.15)
                 usage = cpu_usage(before, host.cpu_ticks())
@@ -225,13 +232,13 @@ class SystemSampler:
                 return {"usage": usage, "load1": loads[0], "load5": loads[1], "load15": loads[2], "core_count": os.cpu_count()}
             data["cpu"] = attempt("CPU", cpu) or {}
             data["memory"] = attempt("Memory", lambda: parse_vm_stats(command(["/usr/bin/vm_stat"]), host.integer("hw.memsize"))) or {}
-            def hardware():
+            def hardware() -> dict[str, Any]:
                 return {"model": host.text("hw.model"), "cpu_model": host.text("machdep.cpu.brand_string"),
                         "os_version": command(["/usr/bin/sw_vers", "-productVersion"]).strip(), "total_ram": host.integer("hw.memsize")}
             if self.hardware is None:
                 self.hardware = attempt("Hardware", hardware)
             data["hardware"] = self.hardware or {}
-            def uptime():
+            def uptime() -> int:
                 # struct timeval: time_t seconds followed by microseconds on macOS 64-bit.
                 seconds = int.from_bytes(host.sysctl("kern.boottime")[:8], sys.byteorder, signed=True)
                 return max(0, int(time.time() - seconds))
@@ -239,17 +246,17 @@ class SystemSampler:
             if seconds is not None:
                 data["uptime"] = f"{seconds // 86400}d {seconds // 3600 % 24}h {seconds // 60 % 60}m"
         mounts = [Path("/")]
-        def volumes():
+        def volumes() -> list[Path]:
             return [p for p in Path("/Volumes").iterdir() if not p.is_symlink() and p.is_mount()]
         mounts.extend(attempt("Mounted volumes", volumes) or [])
         for mount in mounts:
-            def disk():
+            def disk(mount: Path = mount) -> dict[str, Any]:  # bind this iteration's mount, not the loop variable
                 usage = shutil.disk_usage(mount)
                 return {"mount": str(mount), "used": usage.used, "total": usage.total, "used_percent": usage.used / usage.total * 100}
             reading = attempt(f"Disk {mount}", disk)
             if reading:
                 data["disks"].append(reading)
-        def network():
+        def network() -> list[dict[str, Any]]:
             counters = parse_netstat(command(["/usr/sbin/netstat", "-ibn"]))
             now = time.monotonic()
             elapsed = now - self.previous_network_time if self.previous_network_time is not None else 0
@@ -258,7 +265,7 @@ class SystemSampler:
             return result
         data["network"] = attempt("Network", network) or []
         data["batteries"] = attempt("Battery", lambda: parse_battery(command(["/usr/bin/pmset", "-g", "batt"]))) or []
-        def processes():
+        def processes() -> list[dict[str, Any]]:
             output = command(["/bin/ps", "-axo", "pid=,pcpu=,pmem=,comm="])
             result = []
             for line in output.splitlines():

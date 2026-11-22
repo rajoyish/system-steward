@@ -8,6 +8,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import NoReturn
 
 from chrome_cleanup import safe_path
 
@@ -61,17 +62,17 @@ PURGE_GUIDE = (
 )
 
 
-def protected_name(name):
+def protected_name(name: str) -> bool:
     lowered = name.casefold()
     return ".lrcat" in lowered or lowered in PROTECTED_NAMES
 
 
-def protected_tree(path):
+def protected_tree(path: Path) -> bool:
     """If a candidate contains protected files, keep that entire candidate."""
     if protected_name(path.name) or not safe_path(path):
         return True
     if path.is_dir():
-        def failed(error):
+        def failed(error: OSError) -> NoReturn:
             raise error
         for current, dirs, files in os.walk(path, followlinks=False, onerror=failed):
             for name in dirs + files:
@@ -80,7 +81,7 @@ def protected_tree(path):
     return False
 
 
-def running_process_names():
+def running_process_names() -> list[str]:
     """Executable names (Windows) or command paths (macOS) of running processes."""
     blocked = "Cannot verify that Adobe apps are closed; cleanup was blocked"
     if sys.platform == "win32":
@@ -99,11 +100,11 @@ def running_process_names():
     return result.stdout.splitlines()
 
 
-def adobe_running():
+def adobe_running() -> bool:
     return any(ADOBE_PROCESS.search(line.strip()) for line in running_process_names())
 
 
-def approved_cache(library, path):
+def approved_cache(library: Path, path: Path) -> bool:
     try:
         parts = path.relative_to(library).parts
     except ValueError:
@@ -142,7 +143,7 @@ class AdobePlan:
     skipped: tuple
 
 
-def build_plan(home=None):
+def build_plan(home: str | os.PathLike[str] | None = None) -> AdobePlan:
     if home is not None:
         home_path = Path(home)
         library = home_path / "Library"
@@ -177,7 +178,7 @@ def build_plan(home=None):
     if adobe.is_symlink():
         skipped.append(adobe)
     elif adobe.is_dir():
-        def failed(error):
+        def failed(error: OSError) -> NoReturn:
             raise error
         for current, dirs, _ in os.walk(adobe, followlinks=False, onerror=failed):
             for name in dirs[:]:
@@ -204,7 +205,7 @@ def build_plan(home=None):
     return AdobePlan(data_root, tuple(roots), tuple(targets), tuple(skipped))
 
 
-def validate_target(plan, path):
+def validate_target(plan: AdobePlan, path: Path) -> None:
     if path.parent not in plan.cache_dirs or not approved_cache(plan.data_root, path.parent):
         raise OSError("Refusing to delete an Adobe parent folder or unapproved location")
     if not safe_path(path) or protected_tree(path):
@@ -212,7 +213,7 @@ def validate_target(plan, path):
 
 
 class AdobeCleanupJob:
-    def __init__(self, plan):
+    def __init__(self, plan: AdobePlan) -> None:
         self.plan = plan
         self.done, self.cancel = threading.Event(), threading.Event()
         self.removed, self.errors = [], []
@@ -220,7 +221,7 @@ class AdobeCleanupJob:
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
-    def run(self):
+    def run(self) -> None:
         try:
             checked_at = None
             for path in self.plan.targets:

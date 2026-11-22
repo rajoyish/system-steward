@@ -1,9 +1,8 @@
 """Keep Awake validation, subprocess ownership, and native UI lifecycles."""
-import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 import os
-import signal
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -18,8 +17,8 @@ import keep_awake
 from keep_awake import AwakeSession, plan_session
 from keep_awake_tui import KeepAwakeScreen
 from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 from system_steward_tui import SystemStewardApp
-
 
 REAL_POPEN = subprocess.Popen
 
@@ -216,8 +215,9 @@ class WindowsCaffeinateTests(unittest.TestCase):
 
     def test_background_launch_status_and_stop_round_trip(self):
         helper = Path(__file__).parent / "windows_caffeinate.py"
-        run = lambda *args: subprocess.run([sys.executable, str(helper), *args], capture_output=True,
-                                           text=True, timeout=30, cwd=Path(__file__).parent)
+        def run(*args):
+            return subprocess.run([sys.executable, str(helper), *args], capture_output=True,
+                                  text=True, timeout=30, cwd=Path(__file__).parent)
         awake_state.remove()
         started = run("-b", "-id", "-t", "60")
         try:

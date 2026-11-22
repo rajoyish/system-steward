@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch, Mock
+from unittest.mock import Mock, patch
 
 from chrome_cleanup import CleanupJob, build_plan, chrome_running, validate_target
 

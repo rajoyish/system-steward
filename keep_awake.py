@@ -1,5 +1,6 @@
 """Own and stop a Keep Awake session (macOS caffeinate / Windows helper) without changing power settings."""
 from collections import deque
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -9,13 +10,14 @@ import subprocess
 import sys
 import threading
 import time
+from typing import IO
 
 import awake_state
 
 OWNERSHIP_RECHECK = 2.0  # seconds a positive/negative ownership check is reused for status display
 
 
-def check_pid(pid):
+def check_pid(pid: object) -> None:
     """Raise ProcessLookupError unless ``pid`` is a running process."""
     if not awake_state.process_alive(pid):
         raise ProcessLookupError(f"No process with PID {pid}")
@@ -30,27 +32,28 @@ class AwakePlan:
     background: bool = False
 
     @property
-    def command(self):
+    def command(self) -> str:
         return shlex.join(self.argv)
 
     @property
-    def flags(self):
+    def flags(self) -> str:
         """The selected caffeinate assertion letters, e.g. ``"id"``."""
         return self.argv[1].lstrip("-") if len(self.argv) > 1 else ""
 
     @property
-    def watched_pid(self):
+    def watched_pid(self) -> int | None:
         return int(self.argv[-1]) if self.mode == "process" else None
 
 
-def positive_integer(value, label, maximum):
+def positive_integer(value: str, label: str, maximum: int) -> int:
     value = value.strip()
     if not value.isascii() or not value.isdecimal() or not 0 < int(value) <= maximum:
         raise ValueError(f"{label} must be a whole number from 1 to {maximum}.")
     return int(value)
 
 
-def plan_session(flags=("i",), mode="manual", duration="", pid="", command="", cwd=None, background=False):
+def plan_session(flags: Iterable[str] = ("i",), mode: str = "manual", duration: str = "", pid: str = "",
+                 command: str = "", cwd: str | os.PathLike[str] | None = None, background: bool = False) -> AwakePlan:
     if mode not in {"manual", "process", "command"}:
         raise ValueError("Choose a supported session mode.")
     selected = set(flags)
@@ -76,7 +79,7 @@ def plan_session(flags=("i",), mode="manual", duration="", pid="", command="", c
     return AwakePlan(tuple(argv), mode, seconds, directory, background=background)
 
 
-def available():
+def available() -> bool:
     if sys.platform == "darwin":
         return os.access("/usr/bin/caffeinate", os.X_OK)
     if sys.platform == "win32":
@@ -84,7 +87,7 @@ def available():
     return False
 
 
-def helper_python(windowless=False):
+def helper_python(windowless: bool = False) -> str:
     """Interpreter for the stdlib-only Windows helper.
 
     A venv's python.exe/pythonw.exe is a launcher that keeps running alongside a child interpreter,
@@ -99,7 +102,7 @@ def helper_python(windowless=False):
     return str(fallback if fallback.is_file() else sys.executable)
 
 
-def stop_hint():
+def stop_hint() -> str:
     if sys.platform == "win32":
         return "pwsh -File .\\keep-awake.ps1 -Stop  (or system-steward.ps1 --stop-awake)"
     return "./system-steward --stop-awake"
@@ -113,7 +116,7 @@ class Launcher:
     launcher cannot detach (the session then runs the plan in the foreground).
     """
 
-    def command(self, plan):
+    def command(self, plan: AwakePlan) -> tuple[str, ...]:
         argv = plan.argv
         if sys.platform == "win32" and argv[0] == "/usr/bin/caffeinate" and not os.path.exists(argv[0]):
             helper = str(Path(__file__).parent / "windows_caffeinate.py")
@@ -121,11 +124,11 @@ class Launcher:
             argv = (helper_python(windowless=plan.background), helper, *daemon, *argv[1:])
         return argv
 
-    def foreground(self, argv, cwd):
+    def foreground(self, argv: Sequence[str], cwd: Path) -> subprocess.Popen:
         return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
 
-    def detached(self, argv, cwd):
+    def detached(self, argv: Sequence[str], cwd: Path) -> tuple[int, subprocess.Popen | None] | None:
         if sys.platform == "win32":
             from platforms.windows import spawn_detached
             pid = spawn_detached(argv, cwd)
@@ -139,12 +142,12 @@ class Launcher:
         return process.pid, process
 
 
-def default_launcher():
+def default_launcher() -> Launcher:
     return Launcher()
 
 
 class AwakeSession:
-    def __init__(self, launcher=None):
+    def __init__(self, launcher: Launcher | None = None) -> None:
         self.launcher = launcher or default_launcher()
         self.process = None
         self.plan = None
@@ -158,12 +161,12 @@ class AwakeSession:
         self._load_persisted()
 
     @property
-    def pid(self):
+    def pid(self) -> int | None:
         if self.record is not None:
             return self.record["pid"]
         return self.process.pid if self.process is not None else None
 
-    def _load_persisted(self):
+    def _load_persisted(self) -> None:
         state = awake_state.read_owned()
         if not state:
             return
@@ -182,7 +185,7 @@ class AwakeSession:
         except ValueError:
             self.plan = None
 
-    def _record_owned(self):
+    def _record_owned(self) -> bool:
         """verify_owned(), cached briefly: on macOS each check spawns `ps` and the UI asks several
         times per second. terminate() always re-verifies, so the cache never authorises a kill."""
         if self.record is None:
@@ -194,13 +197,13 @@ class AwakeSession:
         return cached[2]
 
     @property
-    def running(self):
+    def running(self) -> bool:
         """Side-effect free: is our session process alive right now?"""
         if self.process is not None and self.process.poll() is None:
             return True
         return self._record_owned()
 
-    def poll(self):
+    def poll(self) -> bool:
         """Housekeeping for timers: end an expired session and forget a vanished one. Returns running."""
         if self.record is not None and not self._record_owned():
             awake_state.remove(only_if_pid=self.record["pid"])
@@ -210,7 +213,7 @@ class AwakeSession:
         return self.running
 
     @property
-    def remaining(self):
+    def remaining(self) -> int | None:
         if self.running and self.plan and self.plan.seconds is not None:
             if self.started_wall:
                 elapsed = int(time.time() - self.started_wall)
@@ -219,7 +222,7 @@ class AwakeSession:
             return max(0, self.plan.seconds - elapsed)
         return None
 
-    def start(self, plan):
+    def start(self, plan: AwakePlan) -> None:
         if not available():
             raise RuntimeError("Keep Awake requires macOS caffeinate or Windows.")
         self.poll()
@@ -252,7 +255,7 @@ class AwakeSession:
             threading.Thread(target=self._read, args=(process.stdout, output), daemon=True).start()
 
     @staticmethod
-    def _read(stream, output):
+    def _read(stream: IO[bytes], output: deque[bytes]) -> None:
         with stream:
             while True:
                 try:
@@ -264,7 +267,7 @@ class AwakeSession:
                 output.append(chunk)
 
     @staticmethod
-    def _signal_group(process, sig):
+    def _signal_group(process: subprocess.Popen, sig: int | None) -> None:
         try:
             if hasattr(os, "killpg"):
                 os.killpg(process.pid, sig)
@@ -275,7 +278,7 @@ class AwakeSession:
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
-    def stop(self):
+    def stop(self) -> None:
         was_running = self.running
         self.stopped = True
         record, self.record, self._owned_check = self.record, None, None
@@ -301,7 +304,7 @@ class AwakeSession:
         if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
             self._signal_group(process, signal.SIGKILL)
 
-    def status(self):
+    def status(self) -> str:
         running = self.running
         if not running and not self.stopped and self.process is None:
             return "No Keep Awake session running."
@@ -319,5 +322,5 @@ class AwakeSession:
             return "Keep Awake finished." if code == 0 else f"Keep Awake ended · exit code {code}."
         return "Keep Awake stopped."
 
-    def output_tail(self):
+    def output_tail(self) -> str:
         return b"".join(tuple(self.output)).decode("utf-8", errors="replace")

@@ -1,8 +1,5 @@
 """Native maintenance tests: only temporary homes and fake backend processes."""
-import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
-import json
-import os
 from pathlib import Path
 import shutil
 import sys
@@ -12,10 +9,10 @@ from unittest.mock import AsyncMock, patch
 
 from textual.widgets import Button, DataTable, Input, Select, SelectionList
 
-import native_maintenance as maintenance
-import system_actions
-from system_status import cpu_usage, network_rates, parse_battery, parse_netstat, parse_vm_stats, resource_score
 from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
+import native_maintenance as maintenance
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
+import system_actions
 from system_steward_tui import SystemStewardApp
 
 

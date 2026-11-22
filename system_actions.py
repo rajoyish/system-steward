@@ -1,6 +1,7 @@
 """Reviewed native maintenance actions (Windows and macOS) and conservative macOS Touch ID setup."""
 import asyncio
 import base64
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 import hashlib
 import os
@@ -11,7 +12,10 @@ import shutil
 import signal
 import stat
 import sys
+from typing import Any
 import uuid
+
+Output = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -48,18 +52,18 @@ WINDOWS_ACTIONS = (
 )
 
 
-def actions_for(platform=None):
+def actions_for(platform: str | None = None) -> tuple[Action, ...]:
     return WINDOWS_ACTIONS if (platform or sys.platform) == "win32" else MAC_ACTIONS
 
 
 ACTIONS = actions_for()
 
 
-def action_details(action):
+def action_details(action: Action) -> str:
     return action.title + "\n" + action.description + "\n" + ("Administrator authorization required.\n" if action.administrator else "") + "\n".join(shlex.join(argv) for argv in action.commands)
 
 
-async def run_process(argv, output=None, timeout=180):
+async def run_process(argv: Sequence[str], output: Output | None = None, timeout: float = 180) -> str:
     """Bounded, cancellable output; argv is always passed without a shell."""
     if sys.platform == "win32":
         first = str(argv[0])
@@ -73,7 +77,7 @@ async def run_process(argv, output=None, timeout=180):
         start_new_session=True if sys.platform != "win32" else False)
     lines = []
     try:
-        async def collect():
+        async def collect() -> int:
             while True:
                 chunk = await process.stdout.readline()
                 if not chunk:
@@ -125,7 +129,7 @@ async def run_process(argv, output=None, timeout=180):
             transport.close()
 
 
-def administrator_argv(script):
+def administrator_argv(script: str) -> tuple[str, ...]:
     # Standard Additions displays the system authentication dialog. The app
     # never reads the password. Only internally constructed scripts reach here.
     quoted = script.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
@@ -136,11 +140,11 @@ def administrator_argv(script):
     return ("/usr/bin/osascript", "-e", source)
 
 
-def powershell_literal(text):
+def powershell_literal(text: object) -> str:
     return "'" + str(text).replace("'", "''") + "'"
 
 
-def windows_elevated_argv(argv):
+def windows_elevated_argv(argv: Sequence[str]) -> tuple[str, ...]:
     """Run fixed ``argv`` through a UAC prompt and propagate its exit code.
 
     Only internally defined commands reach here; each argument is a quoted PowerShell literal.
@@ -151,14 +155,14 @@ def windows_elevated_argv(argv):
     return ("pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 
 
-def action_available(action, platform=None):
+def action_available(action: Action, platform: str | None = None) -> bool:
     """Whether the action's programs exist here (absolute macOS paths, or Windows programs on PATH)."""
     if (platform or sys.platform) == "win32":
         return all(shutil.which(argv[0]) for argv in action.commands)
     return all(Path(argv[0]).is_file() for argv in action.commands)
 
 
-async def run_action(action, output=None, platform=None):
+async def run_action(action: Action, output: Output | None = None, platform: str | None = None) -> None:
     """Run one reviewed action. ``platform`` ("win32"/"darwin") defaults to this host."""
     platform = platform or sys.platform
     if action not in actions_for(platform):
@@ -192,7 +196,7 @@ class TouchIDPlan:
     description: str
 
 
-def read_pam(directory=PAM_DIRECTORY):
+def read_pam(directory: str | os.PathLike[str] = PAM_DIRECTORY) -> tuple[bytes | None, ...]:
     directory = Path(directory)
     # Canonical /private/etc avoids /etc's standard macOS symlink.
     if directory.is_symlink() or directory.resolve() != directory:
@@ -214,7 +218,7 @@ def read_pam(directory=PAM_DIRECTORY):
     return tuple(result)
 
 
-def touchid_status(directory=PAM_DIRECTORY):
+def touchid_status(directory: str | os.PathLike[str] = PAM_DIRECTORY) -> dict[str, Any]:
     sudo, local = read_pam(directory)
     main_text = sudo.decode("utf-8")
     local_text = (local or b"").decode("utf-8")
@@ -229,7 +233,7 @@ def touchid_status(directory=PAM_DIRECTORY):
                 "A compatible Touch ID sensor and enrolled fingerprint are required to authenticate. Configuration alone does not verify hardware availability."))}
 
 
-def plan_touchid(enabled, directory=PAM_DIRECTORY):
+def plan_touchid(enabled: bool, directory: str | os.PathLike[str] = PAM_DIRECTORY) -> TouchIDPlan:
     sudo, local = read_pam(directory)
     status = touchid_status(directory)
     if not status["supported"]:
@@ -247,7 +251,7 @@ def plan_touchid(enabled, directory=PAM_DIRECTORY):
     return TouchIDPlan(enabled, local, after, hashlib.sha256(sudo).hexdigest(), description)
 
 
-def touchid_script(plan):
+def touchid_script(plan: TouchIDPlan) -> str:
     """A fixed-path, compare-before-write PAM edit with backup and atomic replacement."""
     pam_dir = str(PAM_DIRECTORY).replace("\\", "/")
     target = f"{pam_dir}/sudo_local"
@@ -262,6 +266,10 @@ def touchid_script(plan):
         expected += f' && [ ! -e {target} ]'
     else:
         expected += f' && [ -f {target} ] && [ "$({target_calc})" = {shlex.quote(digest)} ]'
+    # Built outside the f-string: a backslash inside an f-string expression is a SyntaxError
+    # before Python 3.12, and this project supports 3.10+.
+    backup_step = (f"/bin/cp -p {target} {backup}\n/bin/chmod 600 {backup}") if digest is not None else ":"
+    backup_note = ("echo " + shlex.quote("Backup: " + backup)) if digest is not None else ":"
     # The PAM directory is root-owned; no user-writable helper is run as root.
     return f'''set -eu
 [ ! -L {pam_dir} ] && [ ! -L {target} ] && [ ! -L {main} ] || {{ echo 'Redirected PAM file; changes refused' >&2; exit 1; }}
@@ -273,16 +281,16 @@ pam_tmp=$(/usr/bin/mktemp {pam_dir}/.system-steward.XXXXXX 2>/dev/null || mktemp
 /usr/bin/printf '%s' {shlex.quote(data)} | (/usr/bin/base64 -D 2>/dev/null || base64 -d) > "$pam_tmp"
 /usr/sbin/chown root:wheel "$pam_tmp"
 /bin/chmod 444 "$pam_tmp"
-{('/bin/cp -p ' + target + ' ' + backup + '\n/bin/chmod 600 ' + backup) if digest is not None else ':'}
+{backup_step}
 {expected} || {{ echo 'Authentication settings changed during write; changes refused' >&2; exit 1; }}
 /bin/mv -f "$pam_tmp" {target}
 pam_tmp=''
 echo 'Touch ID configuration updated.'
-{('echo ' + shlex.quote('Backup: ' + backup)) if digest is not None else ':'}
+{backup_note}
 '''
 
 
-async def apply_touchid(plan, output=None):
+async def apply_touchid(plan: TouchIDPlan, output: Output | None = None) -> None:
     if not isinstance(plan, TouchIDPlan):
         raise ValueError("Invalid Touch ID plan")
     sudo, local = read_pam()

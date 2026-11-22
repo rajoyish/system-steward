@@ -10,7 +10,6 @@ import threading
 
 from strings import TEXT
 
-
 PROFILE_NAME = re.compile(r"(?:Default|Profile \d+|Guest Profile|System Profile)\Z")
 SITE_DIRS = (
     "IndexedDB", "Local Storage", "Session Storage", "Service Worker", "WebStorage",
@@ -33,13 +32,13 @@ PROFILE_TARGETS = frozenset(SITE_DIRS + CACHE_DIRS + tuple(
     for suffix in ("", "-journal", "-wal", "-shm")))
 
 
-def windows_process_names():
+def windows_process_names() -> list[str]:
     """Running executable names via one native Toolhelp snapshot (milliseconds, no PowerShell)."""
     from platforms.windows import process_names
     return process_names()
 
 
-def chrome_running():
+def chrome_running() -> bool:
     """Check the browser and helpers, excluding the standalone crash reporter."""
     if sys.platform == "win32":
         # Called before every target during cleanup, so it must be cheap.
@@ -68,12 +67,12 @@ class CleanupPlan:
     skipped: tuple
 
 
-def safe_path(path):
+def safe_path(path: Path) -> bool:
     # Refuse symlinked targets and ancestors, including a redirected Chrome root.
     return not any(p.is_symlink() for p in (path, *path.parents))
 
 
-def validate_target(plan, path):
+def validate_target(plan: "CleanupPlan", path: Path | str) -> None:
     path = Path(path)
     if not safe_path(path):
         raise OSError("Refusing a symlinked cleanup path")
@@ -91,7 +90,7 @@ def validate_target(plan, path):
         raise OSError("Cleanup path is not an approved site-data or cache location")
 
 
-def build_plan(home=None):
+def build_plan(home: str | os.PathLike[str] | None = None) -> CleanupPlan:
     if home is not None:
         home_path = Path(home)
         mac_data = home_path / "Library/Application Support/Google/Chrome"
@@ -152,7 +151,7 @@ def build_plan(home=None):
 
 
 class CleanupJob:
-    def __init__(self, plan):
+    def __init__(self, plan: CleanupPlan) -> None:
         self.plan = plan
         self.done = threading.Event()
         self.cancel = threading.Event()
@@ -162,7 +161,7 @@ class CleanupJob:
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
-    def run(self):
+    def run(self) -> None:
         try:
             for path in self.plan.targets:
                 if self.cancel.is_set():

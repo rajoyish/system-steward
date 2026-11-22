@@ -1,0 +1,37 @@
+[project]
+name = "system-steward"
+description = "Terminal app for disk usage, cleanup and system maintenance on Windows and macOS."
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [".venv", ".wheels", "previews"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes: unused / undefined names
+    "B",        # bugbear: likely bugs
+    "I",        # import order
+    "UP",       # modern syntax for the target Python
+    "ANN",      # type annotations on public functions (see per-file ignores)
+]
+ignore = [
+    "ANN401",   # Any is sometimes the honest type
+    # Long lines are mostly user-facing strings and data tables; wrapping ~185 of them would be a
+    # wholesale reformat. line-length still guides `ruff format` and new code.
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Textual widgets and screens: handlers are framework callbacks; annotating them adds noise, not safety.
+"tui/*" = ["ANN"]
+"*_tui.py" = ["ANN"]
+"dashboard.py" = ["ANN"]
+"system_steward_tui.py" = ["ANN"]
+"test_*.py" = ["ANN"]
+"steward_test_env.py" = ["ANN"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true

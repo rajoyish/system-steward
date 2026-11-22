@@ -1,8 +1,12 @@
 """Group approved cleanup locations into explicit user-selectable units."""
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from chrome_cleanup import CACHE_DIRS
+from adobe_cleanup import AdobePlan
+from chrome_cleanup import CACHE_DIRS, CleanupPlan
+
+Plan = CleanupPlan | AdobePlan
 
 
 @dataclass(frozen=True)
@@ -13,7 +17,7 @@ class CleanupGroup:
     effect: str
 
 
-def cleanup_groups(kind, plan, scope="cache"):
+def cleanup_groups(kind: str, plan: Plan, scope: str = "cache") -> list[CleanupGroup]:
     buckets = {}
     if kind == "Adobe":
         for root in plan.cache_dirs:
@@ -42,7 +46,7 @@ def cleanup_groups(kind, plan, scope="cache"):
     return sorted(buckets.values(), key=lambda group: (group.label.casefold(), str(group.path)))
 
 
-def selection_plan(plan, groups, selected):
+def selection_plan(plan: Plan, groups: Sequence[CleanupGroup], selected: Iterable[int]) -> Plan:
     """Restrict a plan to reviewed groups; never add paths outside the allowlist."""
     selected = set(selected)
     if not selected or any(not isinstance(index, int) or not 0 <= index < len(groups) for index in selected):

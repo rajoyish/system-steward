@@ -10,10 +10,10 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Button, DataTable, Footer, Input, Label, RichLog, Select, SelectionList, Static
 
-import native_maintenance as maintenance
 from app_identity import BRAND
-import system_actions
+import native_maintenance as maintenance
 from strings import TEXT
+import system_actions
 from system_status import SystemSampler
 from system_steward import Entry, Scan, size_label
 

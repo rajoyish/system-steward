@@ -4,6 +4,7 @@ Prototypes are declared once (``api()``), with ``use_last_error`` so failures re
 Only ctypes/functools/os/time are imported at module load: the background Keep Awake helper
 imports this module and should stay a minimal interpreter.
 """
+from collections.abc import Sequence
 import ctypes
 from ctypes import wintypes
 import functools
@@ -12,6 +13,10 @@ from pathlib import Path
 import platform as _platform
 import shutil
 import time
+from typing import Any
+
+# {(pid, creation_time): (exe_name, cpu_time_100ns, working_set_bytes)}
+UsageSnapshot = dict[tuple[int, int], tuple[str, int, int]]
 
 # --------------------------------------------------------------------------- constants
 
@@ -196,7 +201,7 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
 
 
 class _Api:
-    def __init__(self):
+    def __init__(self) -> None:
         self.kernel32 = k = ctypes.WinDLL("kernel32", use_last_error=True)
         self.psapi = p = ctypes.WinDLL("psapi", use_last_error=True)
         self.iphlpapi = n = ctypes.WinDLL("iphlpapi", use_last_error=True)
@@ -242,17 +247,17 @@ class _Api:
 
 
 @functools.cache
-def api():
+def api() -> _Api:
     return _Api()
 
 
-def _filetime(ft):
+def _filetime(ft: wintypes.FILETIME) -> int:
     return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
 
 
 # --------------------------------------------------------------------------- processes
 
-def process_identity(pid):
+def process_identity(pid: int) -> dict[str, Any] | None:
     """{"alive", "create_time", "exe"} for a live PID, or None when it is not running."""
     k = api().kernel32
     handle = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -277,7 +282,7 @@ def process_identity(pid):
         k.CloseHandle(handle)
 
 
-def terminate_pid(pid):
+def terminate_pid(pid: int) -> bool:
     k = api().kernel32
     handle = k.OpenProcess(PROCESS_TERMINATE, False, int(pid))
     if not handle:
@@ -288,7 +293,7 @@ def terminate_pid(pid):
         k.CloseHandle(handle)
 
 
-def private_memory_mb(pid):
+def private_memory_mb(pid: object) -> float | None:
     """Private (committed) memory of ``pid`` in MiB: the honest footprint, unlike the trimmable working set."""
     try:
         pid = int(pid)
@@ -308,7 +313,7 @@ def private_memory_mb(pid):
         a.kernel32.CloseHandle(handle)
 
 
-def wait_for_process(pid, duration=None):
+def wait_for_process(pid: int, duration: float | None = None) -> None:
     """Block until ``pid`` exits or ``duration`` seconds pass, without polling process state.
 
     Waits on the process handle in 1 s slices only so Ctrl+C stays responsive in a console.
@@ -329,7 +334,7 @@ def wait_for_process(pid, duration=None):
         k.CloseHandle(handle)
 
 
-def kill_on_close_job():
+def kill_on_close_job() -> tuple[int | None, int]:
     """Put the current process in a job that kills every member when this process dies.
 
     Children spawned afterwards inherit the job, so terminating the helper also ends a wrapped
@@ -349,13 +354,13 @@ def kill_on_close_job():
     return None, error
 
 
-def set_execution_state(display=False, clear=False):
+def set_execution_state(display: bool = False, clear: bool = False) -> None:
     """Request (or release) idle/display sleep prevention for the calling thread."""
     flags = ES_CONTINUOUS if clear else ES_CONTINUOUS | ES_SYSTEM_REQUIRED | (ES_DISPLAY_REQUIRED if display else 0)
     api().kernel32.SetThreadExecutionState(flags)
 
 
-def spawn_detached(cmd, cwd):
+def spawn_detached(cmd: Sequence[str], cwd: str | os.PathLike[str]) -> int | None:
     """Start ``cmd`` through WMI so it is outside the terminal's job object and survives it closing.
 
     The command line and folder travel in environment variables, never inside the script text,
@@ -375,7 +380,7 @@ def spawn_detached(cmd, cwd):
     return int(output) if result.returncode == 0 and output.isdigit() else None
 
 
-def processes():
+def processes() -> list[tuple[int, str]]:
     """[(pid, exe_name)] for every running process, from one Toolhelp snapshot."""
     k = api().kernel32
     snapshot = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -399,12 +404,12 @@ def processes():
         k.CloseHandle(snapshot)
 
 
-def process_names():
+def process_names() -> list[str]:
     """Lower-cased executable names of running processes, e.g. "chrome.exe"."""
     return [name.lower() for _, name in processes()]
 
 
-def process_usage(pid):
+def process_usage(pid: int) -> tuple[int, int, int] | None:
     """(creation_time, cpu_time_100ns, working_set_bytes) or None when the process is not inspectable."""
     a = api()
     handle = a.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
@@ -424,7 +429,7 @@ def process_usage(pid):
         a.kernel32.CloseHandle(handle)
 
 
-def usage_snapshot():
+def usage_snapshot() -> UsageSnapshot:
     """{(pid, creation_time): (name, cpu_time_100ns, working_set)}; keyed by creation time so a
     reused PID is never compared with the previous owner's CPU time."""
     snapshot = {}
@@ -438,7 +443,8 @@ def usage_snapshot():
     return snapshot
 
 
-def top_processes(before, after, elapsed, total_ram, cpu_count, limit=10):
+def top_processes(before: UsageSnapshot, after: UsageSnapshot, elapsed: float, total_ram: int,
+                  cpu_count: int | None, limit: int = 10) -> list[dict[str, Any]]:
     """Top processes by CPU share between two usage snapshots.
 
     CPU is a percentage of total machine capacity (Task Manager's convention), so it is 0-100.
@@ -459,7 +465,7 @@ def top_processes(before, after, elapsed, total_ram, cpu_count, limit=10):
 
 # --------------------------------------------------------------------------- network
 
-def interface_counters():
+def interface_counters() -> dict[str, tuple[int, int]]:
     """{alias: (received_bytes, sent_bytes)} for connected, non-loopback, non-filter interfaces."""
     n = api().iphlpapi
     table = ctypes.POINTER(MIB_IF_TABLE2)()
@@ -486,11 +492,11 @@ def interface_counters():
 
 # --------------------------------------------------------------------------- storage
 
-def drive_type(root):
+def drive_type(root: str) -> int:
     return api().kernel32.GetDriveTypeW(root)
 
 
-def cluster_size(path):
+def cluster_size(path: str | os.PathLike[str]) -> int:
     """Allocation unit of the volume holding ``path`` (4 KiB fallback)."""
     sectors, sector_bytes, free, total = (wintypes.DWORD() for _ in range(4))
     try:
@@ -502,7 +508,7 @@ def cluster_size(path):
     return 4096
 
 
-def on_disk_size(path, fallback):
+def on_disk_size(path: str, fallback: int) -> int:
     """Real on-disk size of a compressed / sparse / compacted file."""
     high = wintypes.DWORD()
     low = api().kernel32.GetCompressedFileSizeW(path, ctypes.byref(high))
@@ -511,7 +517,7 @@ def on_disk_size(path, fallback):
     return (high.value << 32) | low
 
 
-def recycle(path):
+def recycle(path: str | os.PathLike[str]) -> None:
     """Send one reviewed path to the Recycle Bin (restorable from Explorer).
 
     Only local fixed drives are accepted: on network, removable or RAM drives the shell would
@@ -532,7 +538,7 @@ def recycle(path):
         raise OSError(f"{path} is still present after moving it to the Recycle Bin")
 
 
-def drives():
+def drives() -> list[dict[str, Any]]:
     """Usage of local, removable and network drive letters."""
     result = []
     bitmask = api().kernel32.GetLogicalDrives()
@@ -555,16 +561,16 @@ def drives():
 class Host:
     """Windows system resource sampling using Win32 APIs."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.kernel32 = api().kernel32
 
-    def cpu_ticks(self):
+    def cpu_ticks(self) -> tuple[int, int, int]:
         idle, kernel, user = (wintypes.FILETIME() for _ in range(3))
         if not self.kernel32.GetSystemTimes(ctypes.byref(idle), ctypes.byref(kernel), ctypes.byref(user)):
             raise OSError(ctypes.get_last_error(), "GetSystemTimes failed")
         return (_filetime(idle), _filetime(kernel), _filetime(user))
 
-    def memory_stats(self):
+    def memory_stats(self) -> dict[str, Any]:
         stat = MEMORYSTATUSEX()
         stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         if not self.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
@@ -574,7 +580,7 @@ class Host:
         return {"total": stat.ullTotalPhys, "used": used, "used_percent": used_percent, "compressed": 0,
                 "cached": stat.ullAvailPhys, "definition": "Physical RAM in use; excludes available standby cache."}
 
-    def hardware_info(self, total_ram):
+    def hardware_info(self, total_ram: int) -> dict[str, Any]:
         cpu_name = _platform.processor()
         model = "Windows PC"
         try:
@@ -588,10 +594,10 @@ class Host:
         return {"model": model, "cpu_model": cpu_name,
                 "os_version": f"Windows {_platform.version()} ({_platform.release()})", "total_ram": total_ram}
 
-    def uptime_seconds(self):
+    def uptime_seconds(self) -> int:
         return int(self.kernel32.GetTickCount64() // 1000)
 
-    def power_status(self):
+    def power_status(self) -> list[dict[str, Any]]:
         s = SYSTEM_POWER_STATUS()
         if not self.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
             return []

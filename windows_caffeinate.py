@@ -10,6 +10,7 @@ paths that need them, so a background session that just holds the sleep request 
 import os
 import sys
 import time
+from typing import Any
 
 import awake_state
 from platforms import windows as win
@@ -21,32 +22,32 @@ CREATE_NO_WINDOW = win.CREATE_NO_WINDOW
 FLAG_LETTERS = frozenset("idmsu")
 
 
-def is_flag_cluster(arg):
+def is_flag_cluster(arg: str) -> bool:
     return len(arg) > 1 and arg[0] == "-" and set(arg[1:]) <= FLAG_LETTERS
 
 
-def get_process_memory_mb(pid):
+def get_process_memory_mb(pid: int) -> float | None:
     """Private (committed) memory of ``pid`` in MiB."""
     return win.private_memory_mb(pid)
 
 
-def set_awake_state(display=False):
+def set_awake_state(display: bool = False) -> None:
     win.set_execution_state(display=display)
 
 
-def clear_awake_state():
+def clear_awake_state() -> None:
     win.set_execution_state(clear=True)
 
 
-def is_pid_alive(pid):
+def is_pid_alive(pid: int) -> bool:
     return awake_state.process_alive(pid)
 
 
-def wait_for_pid(pid, duration=None):
+def wait_for_pid(pid: int, duration: float | None = None) -> None:
     win.wait_for_process(pid, duration)
 
 
-def kill_on_close_job():
+def kill_on_close_job() -> int | None:
     """Kill-on-close job for this helper so a wrapped command never outlives it (see platforms.windows)."""
     job, error = win.kill_on_close_job()
     if job is None:
@@ -55,7 +56,7 @@ def kill_on_close_job():
     return job
 
 
-def parse_args(args):
+def parse_args(args: list[str]) -> dict[str, Any]:
     """Parse a caffeinate-style command line. The wrapped command starts at the first non-option or after ``--``."""
     options = {"display": False, "duration": None, "pid": None, "command": [], "background": False,
                "daemon": False, "forward": []}
@@ -96,15 +97,15 @@ def parse_args(args):
     return options
 
 
-def session_mode(options):
+def session_mode(options: dict[str, Any]) -> str:
     return "process" if options["pid"] else ("command" if options["command"] else "manual")
 
 
-def flags_of(options):
+def flags_of(options: dict[str, Any]) -> str:
     return "id" if options["display"] else "i"
 
 
-def show_status():
+def show_status() -> int:
     state = awake_state.read_owned()
     if not state:
         print("No Keep Awake session running.")
@@ -120,7 +121,7 @@ def show_status():
     return 0
 
 
-def stop_session():
+def stop_session() -> int:
     state = awake_state.read_owned()
     if state and awake_state.terminate(state):
         awake_state.remove(only_if_pid=state["pid"])
@@ -131,9 +132,10 @@ def stop_session():
     return 0
 
 
-def launch_background(options):
+def launch_background(options: dict[str, Any]) -> int:
     """Start a detached copy of this helper. The launcher is the only writer of the session record."""
     import subprocess
+
     from keep_awake import helper_python
 
     existing = awake_state.read_owned()
@@ -162,7 +164,7 @@ def launch_background(options):
     return 0
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
 
     # Control commands are only recognised on their own, never inside a wrapped command line.

@@ -10,8 +10,8 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Label, ProgressBar, Select, SelectionList, Static
 
 import adobe_cleanup
-import chrome_cleanup
 from app_identity import BRAND
+import chrome_cleanup
 from cleanup_selection import cleanup_groups, selection_plan
 from system_steward import GROUP_ICONS, Entry, Scan, pretty_path, size_label
 from tui.dialogs import CleanupList, ConfirmDialog, InfoDialog

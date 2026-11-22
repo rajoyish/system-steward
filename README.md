@@ -249,6 +249,15 @@ Run tests on macOS:
 .venv/bin/python -m unittest -v
 ```
 
+Lint with [ruff](https://docs.astral.sh/ruff/) (configured in `pyproject.toml`; a dev-only dependency, not needed to run the app):
+
+```powershell
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m ruff check .
+```
+
+Non-UI modules carry type hints on every function, and ruff's `ANN` rules keep it that way; Textual screens and tests are exempt because their handlers are framework callbacks.
+
 Tests cover scanning, cancellation, timeouts, launchers, keyboard and mouse interaction, resizing, cleanup selection and confirmation, running-app blocking, maintenance, Keep Awake sessions, and system readings. Cleanup tests use temporary fake profiles and folders instead of real Chrome or Adobe data, and Keep Awake tests use a throwaway state folder, so a test run never touches your real session.
 
 ### Project layout

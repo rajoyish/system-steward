@@ -16,14 +16,14 @@ from textual.theme import Theme
 from textual.widgets import Button, DataTable, Footer, Input, Label, ProgressBar, Static, Tab, Tabs
 
 from app_identity import APP_NAME, AUTHOR, BRAND, VERSION
-from dashboard import DashboardCard, METRICS, TOOLS, metric_values
+from dashboard import METRICS, TOOLS, DashboardCard, metric_values
 from keep_awake import AwakeSession
 from keep_awake_tui import KeepAwakeScreen
 from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
-from system_status import SystemSampler
-from system_steward import GROUPS, GROUP_ICONS, Scan, audit_entries, children, clean, entry_icon, report, size_label
-from tui.cleanup_screen import CleanupScreen
 from strings import TEXT
+from system_status import SystemSampler
+from system_steward import GROUP_ICONS, GROUPS, Scan, audit_entries, children, clean, entry_icon, report, size_label
+from tui.cleanup_screen import CleanupScreen
 from tui.dialogs import InfoDialog, display_path
 
 # While a scan runs, re-sort the storage table at most this often (seconds); values update every tick.
@@ -415,7 +415,7 @@ class SystemStewardApp(App):
             self.dashboard_sample = data
             for key, value in metric_values(data).items():
                 dashboard.query_one(f"#metric-{key}", DashboardCard).set_value(value)
-            for key, title, description, tooltip in METRICS:
+            for key, _title, _description, tooltip in METRICS:
                 detail = tooltip
                 if key == "resource":
                     detail = data.get("health_score_msg") or tooltip

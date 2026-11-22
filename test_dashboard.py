@@ -1,5 +1,4 @@
 """Native dashboard formatting, shortcut routing and responsive interactions."""
-import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 from pathlib import Path
 import tempfile
@@ -8,8 +7,9 @@ from unittest.mock import patch
 
 from textual.widgets import DataTable
 
-from dashboard import DashboardCard, METRICS, TOOLS, metric_values
+from dashboard import TOOLS, DashboardCard, metric_values
 from maintenance_tui import MaintenanceScreen
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 from system_steward_tui import SystemStewardApp
 
 SAMPLE = {"health_score": 85, "cpu": {"usage": 23.4}, "memory": {"used_percent": 56.2},
@@ -51,7 +51,7 @@ class DashboardUITests(unittest.IsolatedAsyncioTestCase):
                 async with app.run_test(size=(140, 48)) as pilot:
                     await self.wait_for(pilot, lambda: app.dashboard_sample is not None)
                     self.assertTrue(app.dashboard_expanded)
-                    for key, title, description in TOOLS:
+                    for key, _title, description in TOOLS:
                         card = app.query_one(f"#tool-{key}", DashboardCard)
                         self.assertIn(description, card.label.plain)
                         self.assertGreater(card.region.height, 0)

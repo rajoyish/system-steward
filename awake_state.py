@@ -9,29 +9,32 @@ import json
 import os
 from pathlib import Path
 import time
+from typing import Any
 
 from platforms import IS_WINDOWS
 
 if IS_WINDOWS:
-    from platforms.windows import process_identity as _os_identity, terminate_pid as _os_terminate
+    from platforms.windows import process_identity as _os_identity
+    from platforms.windows import terminate_pid as _os_terminate
 else:
-    from platforms.darwin import process_identity as _os_identity, terminate_pid as _os_terminate
+    from platforms.darwin import process_identity as _os_identity
+    from platforms.darwin import terminate_pid as _os_terminate
 
 STATE_NAME = "awake_session.json"
 
 
-def state_dir():
+def state_dir() -> Path:
     override = os.environ.get("SYSTEM_STEWARD_STATE_DIR")
     return Path(override) if override else Path.home() / ".system-steward"
 
 
-def state_file():
+def state_file() -> Path:
     return state_dir() / STATE_NAME
 
 
 # ---------------------------------------------------------------- process identity
 
-def process_identity(pid):
+def process_identity(pid: object) -> dict[str, Any] | None:
     """Return {"alive", "create_time", "exe"} for a live PID, or None when it is not running."""
     try:
         pid = int(pid)
@@ -42,11 +45,11 @@ def process_identity(pid):
     return _os_identity(pid)
 
 
-def process_alive(pid):
+def process_alive(pid: object) -> bool:
     return process_identity(pid) is not None
 
 
-def owned_executable(exe):
+def owned_executable(exe: str | None) -> bool:
     if not exe:
         return False
     name = os.path.basename(str(exe)).lower()
@@ -55,7 +58,7 @@ def owned_executable(exe):
     return name == "caffeinate" or name.startswith("python")
 
 
-def verify_owned(state):
+def verify_owned(state: object) -> bool:
     """True only if the recorded PID is alive and is still the process we launched."""
     if not isinstance(state, dict):
         return False
@@ -71,14 +74,14 @@ def verify_owned(state):
 
 # ---------------------------------------------------------------- record storage
 
-def record(pid, **fields):
+def record(pid: int, **fields: Any) -> dict[str, Any]:
     """Build a session record bound to the identity of ``pid`` as it exists right now."""
     identity = process_identity(pid) or {}
     return {"pid": int(pid), "create_time": identity.get("create_time"), "exe": identity.get("exe"),
             "started": fields.pop("started", time.time()), **fields}
 
 
-def save(state):
+def save(state: dict[str, Any]) -> bool:
     """Atomically write the record; readers never see a partial file."""
     try:
         folder = state_dir()
@@ -92,7 +95,7 @@ def save(state):
         return False
 
 
-def load_raw():
+def load_raw() -> dict[str, Any] | None:
     try:
         with open(state_file(), encoding="utf-8") as handle:
             data = json.load(handle)
@@ -101,7 +104,7 @@ def load_raw():
         return None
 
 
-def remove(only_if_pid=None):
+def remove(only_if_pid: int | None = None) -> None:
     try:
         if only_if_pid is not None:
             data = load_raw()
@@ -112,7 +115,7 @@ def remove(only_if_pid=None):
         pass
 
 
-def read_owned():
+def read_owned() -> dict[str, Any] | None:
     """Return the live, verified record, deleting a stale or foreign one."""
     data = load_raw()
     if data is None:
@@ -125,7 +128,7 @@ def read_owned():
     return None
 
 
-def terminate(state):
+def terminate(state: dict[str, Any]) -> bool:
     """Terminate the recorded process only after re-verifying it is ours. Returns True if signalled."""
     if not verify_owned(state):
         return False

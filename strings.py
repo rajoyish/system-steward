@@ -68,7 +68,7 @@ MACOS = Wording(
 )
 
 
-def for_platform(platform=None):
+def for_platform(platform: str | None = None) -> Wording:
     return WINDOWS if (platform or sys.platform) == "win32" else MACOS
 
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """System Steward: native storage, cleanup and system maintenance."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict, dataclass
 import datetime
 import json
 import os
@@ -10,10 +12,10 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Any
 import unicodedata
+
 from app_identity import APP_NAME, AUTHOR, VERSION
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
 
 GROUPS = ["All", "Browsers", "Creative", "Developer", "Projects", "Desktop", "Apps"]
 # ⌘ is the macOS Command key; Windows users get a neutral code glyph instead.
@@ -41,15 +43,15 @@ class Entry:
     status: str = "queued"
 
 
-def clean(value):
+def clean(value: object) -> str:
     return "".join(c if c.isprintable() and not unicodedata.combining(c) else "?" for c in str(value))
 
 
-def cell_width(text):
+def cell_width(text: str) -> int:
     return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in text)
 
 
-def clip_cells(text, width):
+def clip_cells(text: object, width: int) -> str:
     result, cells = [], 0
     for char in clean(text):
         span = cell_width(char)
@@ -60,7 +62,7 @@ def clip_cells(text, width):
     return "".join(result)
 
 
-def entry_icon(entry, folder_view):
+def entry_icon(entry: Entry, folder_view: bool) -> str:
     path = Path(entry.path)
     if path.suffix.lower() in (".app", ".exe"):
         return GROUP_ICONS["Apps"]
@@ -71,7 +73,7 @@ def entry_icon(entry, folder_view):
     return FILE_ICONS.get(path.suffix.lower(), "≡")
 
 
-def pretty_path(path):
+def pretty_path(path: str | os.PathLike[str]) -> str:
     home = str(Path.home())
     text = str(path)
     if text == home:
@@ -82,7 +84,7 @@ def pretty_path(path):
     return clean(text.replace("\\", "/"))
 
 
-def size_label(size):
+def size_label(size: float) -> str:
     value = float(size)
     for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
         if value < 1024 or unit == "PiB":
@@ -90,16 +92,15 @@ def size_label(size):
         value /= 1024
 
 
-def children(path, group="Projects"):
+def children(path: str | os.PathLike[str], group: str = "Projects") -> list[Entry]:
     with os.scandir(path) as listing:
         return [Entry(item.name, item.path, group) for item in listing if not item.is_symlink()]
 
 
-def audit_entries_windows(home):
+def audit_entries_windows(home: Path) -> list[Entry]:
     local_app_data = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData/Local"))
     app_data = Path(os.environ.get("APPDATA") or (home / "AppData/Roaming"))
     prog_files = Path(os.environ.get("ProgramFiles", "C:/Program Files"))
-    prog_files_x86 = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
 
     specs = [
         ("Chrome", local_app_data / "Google/Chrome/Application/chrome.exe", "Browsers"),
@@ -145,7 +146,7 @@ def audit_entries_windows(home):
     return unique
 
 
-def audit_entries():
+def audit_entries() -> list[Entry]:
     home = Path.home()
     if sys.platform == "win32":
         return audit_entries_windows(home)
@@ -183,7 +184,7 @@ def audit_entries():
     return entries
 
 
-def du_command(path):
+def du_command(path: str | os.PathLike[str]) -> list[str]:
     if sys.platform != "win32":
         du_bin = shutil.which("du")
         if du_bin:
@@ -225,7 +226,7 @@ ON_DISK_SIZE_DIFFERS = FILE_ATTRIBUTE_SPARSE_FILE | FILE_ATTRIBUTE_COMPRESSED | 
 CHECK_EVERY = 64  # directories between cancellation / deadline checks
 
 
-def windows_cluster_size(path):
+def windows_cluster_size(path: str | os.PathLike[str]) -> int:
     """Allocation unit of the volume holding ``path`` (4 KiB off Windows)."""
     if sys.platform != "win32":
         return 4096
@@ -233,7 +234,7 @@ def windows_cluster_size(path):
     return cluster_size(path)
 
 
-def windows_on_disk_size(path, fallback):
+def windows_on_disk_size(path: str, fallback: int) -> int:
     if sys.platform != "win32":
         return fallback
     from platforms.windows import on_disk_size
@@ -243,7 +244,7 @@ def windows_on_disk_size(path, fallback):
         return fallback
 
 
-def allocated_bytes(stat, path, cluster):
+def allocated_bytes(stat: os.stat_result, path: str, cluster: int) -> int:
     """Disk space a file occupies, rounded to whole clusters like ``du`` on macOS."""
     attributes = getattr(stat, "st_file_attributes", 0)
     if attributes & CLOUD_ONLY:
@@ -254,7 +255,7 @@ def allocated_bytes(stat, path, cluster):
     return -(-size // cluster) * cluster
 
 
-def tree_usage(path, cancel=None, deadline=None):
+def tree_usage(path: str, cancel: threading.Event | None = None, deadline: float | None = None) -> tuple[int, str]:
     """Measure a file or folder in-process with an iterative scandir walk.
 
     Never follows symlinks or junctions, so a link cannot redirect or double-count the scan.
@@ -297,7 +298,7 @@ def tree_usage(path, cancel=None, deadline=None):
 
 
 class Scan:
-    def __init__(self, entries, timeout=120, in_process=None):
+    def __init__(self, entries: list[Entry], timeout: float = 120, in_process: bool | None = None) -> None:
         self.entries, self.timeout = entries, timeout
         # Windows measures inside this process (no interpreter per folder); macOS keeps `du`.
         self.in_process = sys.platform == "win32" if in_process is None else in_process
@@ -307,7 +308,7 @@ class Scan:
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
 
-    def measure(self, entry):
+    def measure(self, entry: Entry) -> None:
         if self.cancel.is_set() or entry.status != "queued":
             return
         entry.status = "scanning"
@@ -347,19 +348,19 @@ class Scan:
                 process.kill()
                 process.wait()
 
-    def run(self):
+    def run(self) -> None:
         try:
             with ThreadPoolExecutor(max_workers=6) as pool:
                 list(pool.map(self.measure, self.entries))
         finally:
             self.finished.set()
 
-    def close(self):
+    def close(self) -> None:
         self.cancel.set()
         self.thread.join(timeout=2)
 
 
-def report(scan, root):
+def report(scan: Scan, root: Path | None) -> dict[str, Any]:
     platform_label = "curated Windows audit" if sys.platform == "win32" else "curated macOS audit"
     return {"created_at": datetime.datetime.now().astimezone().isoformat(),
             "scope": str(root) if root else platform_label,
@@ -368,7 +369,7 @@ def report(scan, root):
 
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", action="version", version=f"{APP_NAME} {VERSION} · by {AUTHOR}")
     parser.add_argument("path", nargs="?", type=Path, help="explore a folder instead of the system audit")

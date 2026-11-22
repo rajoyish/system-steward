@@ -1,4 +1,5 @@
 """Native Windows and macOS maintenance discovery and presentation."""
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 import errno
 import json
@@ -7,10 +8,15 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
+from typing import Any
 import uuid
 
 from strings import TEXT
 from system_steward import size_label
+
+StrPath = str | os.PathLike[str]
+Moved = list[tuple[Path, Path | str]]  # (source, destination or "Recycle Bin")
 
 ALL_FEATURES = (
     ("System Status", "status"), ("Clean System", "clean"),
@@ -23,7 +29,7 @@ ALL_FEATURES = (
 MACOS_ONLY_FEATURES = frozenset({"uninstall", "touchid"})
 
 
-def features(platform=None):
+def features(platform: str | None = None) -> tuple[tuple[str, str], ...]:
     """Tools offered on ``platform`` (default: this host)."""
     windows = (platform or sys.platform) == "win32"
     return tuple(item for item in ALL_FEATURES if not (windows and item[1] in MACOS_ONLY_FEATURES))
@@ -43,7 +49,7 @@ class Candidate:
     effect: str
 
 
-def candidate(label, targets, effect):
+def candidate(label: str, targets: Iterable[StrPath], effect: str) -> Candidate:
     paths = tuple(Path(p).absolute() for p in targets)
     for path in paths:
         # Refuse redirected ancestors as well as a symlink at the target itself.
@@ -54,17 +60,18 @@ def candidate(label, targets, effect):
     return Candidate(label, paths, tuple((p.stat().st_dev, p.stat().st_ino) for p in paths), effect)
 
 
-def discover(kind, home=None, project_root=None, cancel=None):
+def discover(kind: str, home: StrPath | None = None, project_root: StrPath | None = None,
+             cancel: threading.Event | None = None) -> tuple[list[Candidate], list[str]]:
     home = Path(home or Path.home()).resolve()
     groups, warnings = [], []
 
-    def add(label, paths, effect):
+    def add(label: str, paths: Iterable[StrPath], effect: str) -> None:
         try:
             groups.append(candidate(label, paths, effect))
         except (OSError, ValueError) as exc:
             warnings.append(str(exc))
 
-    def items(root):
+    def items(root: Path) -> list[Path]:
         if root.is_symlink() or root.resolve() != root:
             warnings.append(f"Skipped redirected folder: {root}")
             return []
@@ -103,7 +110,7 @@ def discover(kind, home=None, project_root=None, cancel=None):
             if root.resolve() != root or root.is_symlink():
                 warnings.append(f"Skipped redirected scan root: {root}")
                 continue
-            def walk_error(exc):
+            def walk_error(exc: OSError) -> None:
                 warnings.append(str(exc))
             for current, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
                 if cancel and cancel.is_set():
@@ -163,7 +170,7 @@ def discover(kind, home=None, project_root=None, cancel=None):
 RECYCLE_BIN = "Recycle Bin"
 
 
-def recycle_path(path):
+def recycle_path(path: StrPath) -> None:
     """Send one reviewed path to the Windows Recycle Bin (see platforms.windows.recycle)."""
     path = Path(path)
     if not path.is_absolute() or any(c in str(path) for c in "*?"):
@@ -171,7 +178,8 @@ def recycle_path(path):
     from platforms.windows import recycle
     recycle(path)
 
-def trash_group(group, home=None, moved=None, backend="auto"):
+def trash_group(group: Candidate, home: StrPath | None = None, moved: Moved | None = None,
+                backend: str | Callable[[Path], object] = "auto") -> Moved:
     """Only move the reviewed targets, refusing replacements and redirected paths.
 
     ``backend``: "auto" uses the Recycle Bin on Windows and ``~/.Trash`` elsewhere; "folder" forces
@@ -184,7 +192,7 @@ def trash_group(group, home=None, moved=None, backend="auto"):
         raise ValueError("Trash is redirected")
     if not group.targets or len(group.targets) != len(group.identities):
         raise ValueError("Invalid cleanup group")
-    for path, identity in zip(group.targets, group.identities):
+    for path, identity in zip(group.targets, group.identities, strict=True):
         if path.is_symlink() or path.resolve() != path or (path.stat().st_dev, path.stat().st_ino) != identity:
             raise ValueError(f"Target changed since preview: {path}")
     moved = moved if moved is not None else []
@@ -207,9 +215,9 @@ def trash_group(group, home=None, moved=None, backend="auto"):
     return moved
 
 
-def status_rows(data):
+def status_rows(data: dict[str, Any]) -> list[tuple[str, str, str]]:
     """Present native system samples, preserving unavailable readings."""
-    def formatted(key, value):
+    def formatted(key: str, value: object) -> str:
         if value is None:
             return "Unavailable"
         if key in {"used", "total", "compressed", "cached", "received", "sent", "total_ram"} and isinstance(value, (int, float)):
@@ -218,7 +226,7 @@ def status_rows(data):
             return f"{value:.2f}"
         return str(value)
 
-    def details(item):
+    def details(item: dict[str, Any]) -> str:
         return "\n".join(f"{key.replace('_', ' ').capitalize()}: {formatted(key, value)}" for key, value in item.items())
 
     score = data.get("health_score")

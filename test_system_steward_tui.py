@@ -1,5 +1,4 @@
 """Textual integration tests; all deletions use temporary fake Library folders."""
-import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 from pathlib import Path
 import tempfile
@@ -9,11 +8,11 @@ from unittest.mock import patch
 
 from textual.widgets import Button, DataTable, Input, Select, SelectionList, Tabs
 
-import adobe_cleanup
 import chrome_cleanup
 from cleanup_selection import cleanup_groups, selection_plan
-from system_steward_tui import CleanupScreen, ConfirmDialog, InfoDialog, SystemStewardApp
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 from system_steward import Entry
+from system_steward_tui import CleanupScreen, ConfirmDialog, InfoDialog, SystemStewardApp
 
 
 class SelectionTests(unittest.TestCase):
