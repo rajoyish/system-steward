@@ -1,5 +1,7 @@
 """Keep Awake validation, subprocess ownership, and native UI lifecycles."""
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
+import os
 import signal
 from pathlib import Path
 import subprocess
@@ -11,6 +13,8 @@ from unittest.mock import patch
 
 from textual.widgets import Button, Checkbox, Input, Select
 
+import awake_state
+import keep_awake
 from keep_awake import AwakeSession, plan_session
 from keep_awake_tui import KeepAwakeScreen
 from maintenance_tui import MaintenanceConfirm, MaintenanceScreen
@@ -84,7 +88,7 @@ class SessionTests(unittest.TestCase):
         with patch("keep_awake.subprocess.Popen") as spawn:
             with patch("keep_awake.available", return_value=False), self.assertRaises(RuntimeError):
                 self.session.start(plan_session())
-            with patch("keep_awake.os.kill", side_effect=ProcessLookupError), self.assertRaises(ValueError):
+            with patch("keep_awake.check_pid", side_effect=ProcessLookupError), self.assertRaises(ValueError):
                 self.session.start(plan_session(mode="process", pid="12345"))
             spawn.assert_not_called()
             spawn.side_effect = OSError("launch failed")
@@ -159,41 +163,134 @@ class WindowsCaffeinateTests(unittest.TestCase):
 
     def test_windows_caffeinate_memory_trim_and_mb(self):
         import windows_caffeinate
-        import os
         windows_caffeinate.trim_memory()
         mem = windows_caffeinate.get_process_memory_mb(os.getpid())
         if mem is not None:
             self.assertGreater(mem, 0)
 
-    def test_background_session_persisted_and_restored(self):
-        watched = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(30)"])
+    def test_terminating_helper_also_ends_wrapped_command(self):
+        """The helper's kill-on-close job must not orphan the user's command (no killpg on Windows)."""
+        helper = Path(__file__).parent / "windows_caffeinate.py"
+        child = "import os, time; print(os.getpid(), flush=True); time.sleep(60)"
+        proc = REAL_POPEN([sys.executable, str(helper), "-i", sys.executable, "-c", child],
+                          stdout=subprocess.PIPE, text=True)
         try:
-            with tempfile.TemporaryDirectory() as td:
-                state_file = Path(td) / "awake_session.json"
-                with patch("keep_awake.get_state_file", return_value=state_file):
-                    from keep_awake import save_persisted_state, read_persisted_state
-                    save_persisted_state({
-                        "pid": watched.pid,
-                        "started": time.time(),
-                        "mode": "manual",
-                        "duration": None,
-                        "display": False,
-                        "background": True
-                    })
-                    data = read_persisted_state()
-                    self.assertIsNotNone(data)
-                    self.assertEqual(data["pid"], watched.pid)
-
-                    session = AwakeSession()
-                    self.assertTrue(session.running)
-                    self.assertTrue(session.background)
-                    self.assertIn("background", session.status())
-                    session.stop()
-                    self.assertFalse(session.running)
-                    self.assertFalse(state_file.exists())
+            child_pid = int(proc.stdout.readline())
+            self.assertTrue(awake_state.process_alive(child_pid))
+            proc.terminate()  # TerminateProcess, exactly what Stop session does
+            proc.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while awake_state.process_alive(child_pid) and time.monotonic() < deadline:
+                time.sleep(.05)
+            self.assertFalse(awake_state.process_alive(child_pid), "wrapped command was orphaned")
         finally:
-            watched.terminate()
-            watched.wait(timeout=5)
+            proc.kill()
+            proc.stdout.close()
+
+    def test_unknown_helper_option_is_rejected(self):
+        helper = Path(__file__).parent / "windows_caffeinate.py"
+        result = subprocess.run([sys.executable, str(helper), "--bogus"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown option", result.stderr)
+
+    def test_detached_launch_keeps_paths_out_of_powershell_source(self):
+        hostile = [r"C:\it's\py.exe", "helper.py", "-i"]
+        with patch("keep_awake.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout="4321\n", stderr="")
+            self.assertEqual(keep_awake.spawn_detached_windows(hostile, Path(r"C:\O'Brien")), 4321)
+        argv, kwargs = run.call_args.args[0], run.call_args.kwargs
+        self.assertNotIn("it's", " ".join(argv))
+        self.assertNotIn("Brien", " ".join(argv))
+        self.assertEqual(kwargs["env"]["SS_AWAKE_CMDLINE"], subprocess.list2cmdline(hostile))
+        self.assertEqual(kwargs["env"]["SS_AWAKE_CWD"], r"C:\O'Brien")
+
+
+class HelperArgumentTests(unittest.TestCase):
+    def test_display_flag_only_from_flag_clusters(self):
+        import windows_caffeinate as helper
+        self.assertTrue(helper.parse_args(["-id"])["display"])
+        self.assertTrue(helper.parse_args(["-i", "-d", "-t", "5"])["display"])
+        options = helper.parse_args(["-i", "git", "--dry-run", "-d"])
+        self.assertFalse(options["display"])  # flags of the wrapped command are not ours
+        self.assertEqual(options["command"], ["git", "--dry-run", "-d"])
+        self.assertEqual(helper.parse_args(["-i", "--", "-weird"])["command"], ["-weird"])
+        self.assertEqual(helper.parse_args(["-w", "42", "-t", "1.5"])["pid"], 42)
+        for bad in (["--bogus"], ["-t"], ["-t", "soon"], ["-w", "x"]):
+            with self.subTest(args=bad), self.assertRaises(ValueError):
+                helper.parse_args(bad)
+
+    def test_plan_flags_and_record_display(self):
+        self.assertEqual(plan_session().flags, "i")
+        self.assertEqual(plan_session(("d", "i")).flags, "id")
+        # A wrapped command or folder containing "d" must not switch on display sleep prevention.
+        with tempfile.TemporaryDirectory(prefix="dddd ") as folder:
+            plan = plan_session(mode="command", command="dd if=/dev/zero", cwd=folder)
+            self.assertNotIn("d", plan.flags)
+
+
+class OwnershipTests(unittest.TestCase):
+    """The persisted PID is only trusted while it is still the exact process we launched."""
+
+    def setUp(self):
+        self.watched = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(30)"])
+        self.addCleanup(self.watched.wait, 5)
+        self.addCleanup(self.watched.terminate)
+        awake_state.remove()
+        self.addCleanup(awake_state.remove)
+
+    def test_background_session_persisted_restored_and_stopped(self):
+        record = awake_state.record(self.watched.pid, mode="manual", flags="id", display=True, background=True)
+        self.assertIsNotNone(record["create_time"])
+        self.assertTrue(awake_state.save(record))
+        self.assertEqual(awake_state.read_owned()["pid"], self.watched.pid)
+        session = AwakeSession()
+        self.assertTrue(session.running)
+        self.assertTrue(session.background)
+        self.assertEqual(session.plan.flags, "id")
+        self.assertIn("background", session.status())
+        session.stop()
+        self.watched.wait(timeout=5)
+        self.assertFalse(session.running)
+        self.assertFalse(awake_state.state_file().exists())
+
+    def test_reused_pid_is_never_adopted_or_terminated(self):
+        record = awake_state.record(self.watched.pid, mode="manual", flags="i", background=True)
+        record["create_time"] = "a different process"  # same PID, different process instance
+        awake_state.save(record)
+        self.assertFalse(awake_state.verify_owned(record))
+        self.assertFalse(awake_state.terminate(record))
+        session = AwakeSession()
+        self.assertFalse(session.running)
+        session.stop()
+        self.assertIsNone(self.watched.poll(), "an unrelated process was terminated")
+        self.assertFalse(awake_state.state_file().exists(), "stale record should be discarded")
+
+    def test_foreign_executable_is_not_ours(self):
+        identity = {"alive": True, "create_time": 1, "exe": r"C:\Windows\System32\notepad.exe"}
+        with patch("awake_state.process_identity", return_value=identity):
+            self.assertFalse(awake_state.verify_owned({"pid": 99, "create_time": 1}))
+            self.assertFalse(awake_state.verify_owned({"pid": 99}))  # legacy record
+        self.assertTrue(awake_state.owned_executable("/usr/bin/caffeinate"))
+        self.assertTrue(awake_state.owned_executable(r"C:\venv\Scripts\pythonw.exe"))
+
+    def test_running_is_pure_and_poll_ends_expired_timer(self):
+        record = awake_state.record(self.watched.pid, mode="manual", flags="i", duration=5,
+                                    started=time.time() - 60, background=True)
+        awake_state.save(record)
+        session = AwakeSession()
+        with patch("awake_state.terminate", return_value=True) as terminate:
+            self.assertTrue(session.running)
+            self.assertEqual(session.remaining, 0)
+            self.assertTrue(session.running)  # reading state never stops anything
+            terminate.assert_not_called()
+            self.assertFalse(session.poll())
+            terminate.assert_called_once()
+        self.assertIn("stopped", session.status())
+
+    def test_record_file_is_written_atomically(self):
+        awake_state.save({"pid": 1})
+        leftovers = [p.name for p in awake_state.state_dir().iterdir() if p.name.endswith(".tmp")]
+        self.assertEqual(leftovers, [])
 
 
 class AwakeUITests(unittest.IsolatedAsyncioTestCase):

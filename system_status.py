@@ -60,7 +60,10 @@ class WindowsHost:
     def __init__(self):
         if sys.platform != "win32":
             raise OSError("Live system metrics require Windows")
-        self.kernel32 = ctypes.windll.kernel32
+        # use_last_error=True makes ctypes.get_last_error() report the real Win32 error code.
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # The default c_int restype truncates the 64-bit tick count (negative uptime after ~24.8 days).
+        self.kernel32.GetTickCount64.restype = ctypes.c_uint64
 
     def cpu_ticks(self):
         idle = ctypes.c_uint64()

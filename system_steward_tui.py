@@ -799,8 +799,9 @@ class SystemStewardApp(App):
     def refresh_awake_indicator(self):
         if not self.screen_stack:
             return
+        running = self.awake.poll()
         for button in self.screen_stack[0].query("#keep-awake"):
-            button.label = "◷  Keep awake · on" if self.awake.running else "◷  Keep awake"
+            button.label = "◷  Keep awake · on" if running else "◷  Keep awake"
             button.tooltip = self.awake.status()
 
     def action_help(self):

@@ -1,5 +1,6 @@
 """Native macOS and Windows maintenance discovery and presentation."""
 from dataclasses import dataclass
+import errno
 import json
 import os
 from pathlib import Path
@@ -147,23 +148,82 @@ def discover(kind, home=None, project_root=None, cancel=None):
     return groups, warnings
 
 
-def trash_group(group, home=None, moved=None):
-    """Only move the reviewed targets, refusing replacements and redirected paths."""
+RECYCLE_BIN = "Recycle Bin"
+
+
+def recycle_path(path):
+    """Send one reviewed path to the Windows Recycle Bin (restorable from Explorer).
+
+    Only local fixed drives are accepted: on network, removable or RAM drives the shell would
+    silently delete permanently instead of recycling. FOF_WANTNUKEWARNING is a second guard that
+    asks before any permanent deletion the shell decides on anyway.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    path = Path(path)
+    if not path.is_absolute() or any(c in str(path) for c in "*?"):
+        raise ValueError(f"Refusing an unexpected Recycle Bin path: {path}")
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetDriveTypeW.argtypes = (wintypes.LPCWSTR,)
+    kernel32.GetDriveTypeW.restype = wintypes.UINT
+    DRIVE_FIXED = 3
+    if kernel32.GetDriveTypeW(path.anchor) != DRIVE_FIXED:
+        raise ValueError(f"The Recycle Bin is unavailable on {path.anchor}; nothing was moved")
+
+    class SHFILEOPSTRUCTW(ctypes.Structure):
+        if ctypes.sizeof(ctypes.c_void_p) == 4:
+            _pack_ = 1  # shellapi.h packs this structure on 32-bit Windows.
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR), ("fFlags", wintypes.WORD), ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", wintypes.LPVOID), ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+    FO_DELETE = 3
+    FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI, FOF_WANTNUKEWARNING = 0x4, 0x10, 0x40, 0x400, 0x4000
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.SHFileOperationW.argtypes = (ctypes.POINTER(SHFILEOPSTRUCTW),)
+    shell32.SHFileOperationW.restype = ctypes.c_int
+    operation = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=str(path) + "\0",  # list is double-NUL terminated
+                                fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI | FOF_WANTNUKEWARNING)
+    result = shell32.SHFileOperationW(ctypes.byref(operation))
+    if result or operation.fAnyOperationsAborted:
+        raise OSError(f"Could not move {path} to the Recycle Bin (shell error {result:#x})")
+    if os.path.lexists(path):
+        raise OSError(f"{path} is still present after moving it to the Recycle Bin")
+
+
+def trash_group(group, home=None, moved=None, backend="auto"):
+    """Only move the reviewed targets, refusing replacements and redirected paths.
+
+    ``backend``: "auto" uses the Recycle Bin on Windows and ``~/.Trash`` elsewhere; "folder" forces
+    the ``home/.Trash`` folder; a callable receives each path (used by tests).
+    """
     home = Path(home or Path.home()).resolve()
+    recycle = recycle_path if backend == "auto" and sys.platform == "win32" else backend if callable(backend) else None
     trash = home / ".Trash"
-    if trash.is_symlink() or trash.resolve() != trash:
+    if recycle is None and (trash.is_symlink() or trash.resolve() != trash):
         raise ValueError("Trash is redirected")
     if not group.targets or len(group.targets) != len(group.identities):
         raise ValueError("Invalid cleanup group")
     for path, identity in zip(group.targets, group.identities):
         if path.is_symlink() or path.resolve() != path or (path.stat().st_dev, path.stat().st_ino) != identity:
             raise ValueError(f"Target changed since preview: {path}")
-    trash.mkdir(mode=0o700, exist_ok=True)
     moved = moved if moved is not None else []
+    if recycle is not None:
+        for path in group.targets:
+            recycle(path)
+            moved.append((path, RECYCLE_BIN))
+        return moved
+    trash.mkdir(mode=0o700, exist_ok=True)
     for path in group.targets:
         # Unique destination preserves earlier trashed items; rename never traverses contents.
         destination = trash / f"{path.name}.{uuid.uuid4().hex}"
-        path.rename(destination)
+        try:
+            path.rename(destination)
+        except OSError as exc:
+            if exc.errno == errno.EXDEV:
+                raise ValueError(f"{path} is on a different volume than {trash}; move it to that volume's Trash in Finder") from exc
+            raise
         moved.append((path, destination))
     return moved
 

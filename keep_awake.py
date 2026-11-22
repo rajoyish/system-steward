@@ -1,8 +1,6 @@
-"""Own and stop a macOS caffeinate session without changing power settings."""
+"""Own and stop a Keep Awake session (macOS caffeinate / Windows helper) without changing power settings."""
 from collections import deque
-import ctypes
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import shlex
@@ -12,64 +10,13 @@ import sys
 import threading
 import time
 
-
-def get_state_file():
-    state_dir = Path.home() / ".system-steward"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir / "awake_session.json"
-
-
-def save_persisted_state(state):
-    try:
-        with open(get_state_file(), "w", encoding="utf-8") as f:
-            json.dump(state, f)
-    except Exception:
-        pass
-
-
-def remove_persisted_state():
-    try:
-        get_state_file().unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-def read_persisted_state():
-    sf = get_state_file()
-    if sf.exists():
-        try:
-            with open(sf, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            pid = data.get("pid")
-            if pid:
-                check_pid(pid)
-                return data
-            else:
-                remove_persisted_state()
-        except Exception:
-            remove_persisted_state()
-    return None
+import awake_state
 
 
 def check_pid(pid):
-    if sys.platform == "win32":
-        if hasattr(os.kill, "mock_calls"):
-            os.kill(pid, 0)
-            return
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            err = kernel32.GetLastError()
-            if err == 5:
-                return
-            raise ProcessLookupError(f"No process with PID {pid}")
-        exit_code = ctypes.c_ulong()
-        kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-        kernel32.CloseHandle(handle)
-        if exit_code.value != 259:
-            raise ProcessLookupError(f"Process {pid} is not running")
-    else:
-        os.kill(pid, 0)
+    """Raise ProcessLookupError unless ``pid`` is a running process."""
+    if not awake_state.process_alive(pid):
+        raise ProcessLookupError(f"No process with PID {pid}")
 
 
 @dataclass(frozen=True)
@@ -83,6 +30,15 @@ class AwakePlan:
     @property
     def command(self):
         return shlex.join(self.argv)
+
+    @property
+    def flags(self):
+        """The selected caffeinate assertion letters, e.g. ``"id"``."""
+        return self.argv[1].lstrip("-") if len(self.argv) > 1 else ""
+
+    @property
+    def watched_pid(self):
+        return int(self.argv[-1]) if self.mode == "process" else None
 
 
 def positive_integer(value, label, maximum):
@@ -126,22 +82,29 @@ def available():
     return False
 
 
-def spawn_detached_windows(cmd):
+def stop_hint():
+    if sys.platform == "win32":
+        return "pwsh -File .\\keep-awake.ps1 -Stop  (or system-steward.ps1 --stop-awake)"
+    return "./system-steward --stop-awake"
+
+
+def spawn_detached_windows(cmd, cwd):
+    """Start ``cmd`` through WMI so it is outside the terminal's job object and survives it closing.
+
+    The command line and folder travel in environment variables, never inside the script text,
+    so paths containing quotes cannot change the PowerShell that runs.
+    """
+    script = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments "
+              "@{CommandLine = $env:SS_AWAKE_CMDLINE; CurrentDirectory = $env:SS_AWAKE_CWD}; "
+              "if ($r.ReturnValue -eq 0) { $r.ProcessId } else { exit 1 }")
+    env = {**os.environ, "SS_AWAKE_CMDLINE": subprocess.list2cmdline(cmd), "SS_AWAKE_CWD": str(cwd)}
     try:
-        cmd_line = " ".join(f'"{arg}"' if " " in arg or not arg else arg for arg in cmd)
-        script = f"$res = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine = '{cmd_line}'}}\n$res.ProcessId"
-        res = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", "-"],
-            input=script,
-            text=True,
-            capture_output=True,
-            timeout=5
-        )
-        if res.returncode == 0 and res.stdout.strip().isdigit():
-            return int(res.stdout.strip())
-    except Exception:
-        pass
-    return None
+        result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                                env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    output = result.stdout.strip()
+    return int(output) if result.returncode == 0 and output.isdigit() else None
 
 
 class AwakeSession:
@@ -152,45 +115,50 @@ class AwakeSession:
         self.started_wall = None
         self.stopped = False
         self.output = deque(maxlen=16)
-        self.pid = None
+        self.record = None          # verified background-session record (awake_state)
         self.background = False
         self._load_persisted()
 
+    @property
+    def pid(self):
+        if self.record is not None:
+            return self.record["pid"]
+        return self.process.pid if self.process is not None else None
+
     def _load_persisted(self):
-        # Do not load disk state if mocked during test runs
-        if hasattr(subprocess.Popen, "mock_calls"):
+        state = awake_state.read_owned()
+        if not state:
             return
-        state = read_persisted_state()
-        if state:
-            self.pid = state.get("pid")
-            self.started_wall = state.get("started", time.time())
-            self.started = time.monotonic() - max(0, time.time() - self.started_wall)
-            self.background = True
-            flags = ("i", "d") if state.get("display") else ("i",)
-            dur = str(state.get("duration") or "")
-            mode = state.get("mode", "manual")
-            try:
-                self.plan = plan_session(flags=flags, mode=mode, duration=dur, background=True)
-            except Exception:
-                pass
+        self.record = state
+        self.background = True
+        self.started_wall = state.get("started") or time.time()
+        self.started = time.monotonic() - max(0, time.time() - self.started_wall)
+        flags = state.get("flags") or ("id" if state.get("display") else "i")
+        mode = state.get("mode", "manual")
+        watched = state.get("watch_pid")
+        try:
+            self.plan = plan_session(flags=tuple(flags), mode=mode if mode != "process" or watched else "manual",
+                                     duration=str(state.get("duration") or ""), pid=str(watched or ""),
+                                     cwd=state.get("cwd") if state.get("cwd") and Path(state["cwd"]).is_dir() else None,
+                                     background=True)
+        except ValueError:
+            self.plan = None
 
     @property
     def running(self):
+        """Side-effect free: is our session process alive right now?"""
         if self.process is not None and self.process.poll() is None:
             return True
-        if self.pid is not None:
-            try:
-                check_pid(self.pid)
-                if self.plan and self.plan.seconds is not None and self.started_wall:
-                    if (time.time() - self.started_wall) >= self.plan.seconds:
-                        self.stop()
-                        return False
-                return True
-            except (ProcessLookupError, PermissionError):
-                self.pid = None
-                remove_persisted_state()
-                return False
-        return False
+        return self.record is not None and awake_state.verify_owned(self.record)
+
+    def poll(self):
+        """Housekeeping for timers: end an expired session and forget a vanished one. Returns running."""
+        if self.record is not None and not awake_state.verify_owned(self.record):
+            awake_state.remove(only_if_pid=self.record["pid"])
+            self.record = None
+        if self.running and self.remaining == 0:
+            self.stop()
+        return self.running
 
     @property
     def remaining(self):
@@ -205,6 +173,7 @@ class AwakeSession:
     def start(self, plan):
         if not available():
             raise RuntimeError("Keep Awake requires macOS caffeinate or Windows.")
+        self.poll()
         if self.running:
             raise RuntimeError("Stop the current Keep Awake session first.")
         if plan.mode == "process":
@@ -225,60 +194,30 @@ class AwakeSession:
                 cmd = (py_exe, helper, *cmd[1:])
 
         self.background = plan.background
+        self.record = None
         if plan.background and not hasattr(subprocess.Popen, "mock_calls"):
-            # On Windows, try WMI process creation first so it is completely decoupled from terminal job objects
-            if sys.platform == "win32":
-                wmi_pid = spawn_detached_windows(cmd)
-                if wmi_pid:
-                    self.pid = wmi_pid
-                    self.process = None
-                    self.plan = plan
-                    self.started = time.monotonic()
-                    self.started_wall = time.time()
-                    self.stopped = False
-                    save_persisted_state({
-                        "pid": wmi_pid,
-                        "started": self.started_wall,
-                        "duration": plan.seconds,
-                        "mode": plan.mode,
-                        "display": "-d" in str(plan.argv) or "d" in str(plan.argv),
-                        "background": True
-                    })
-                    return
-
-            # Launch detached so closing terminal does not kill keep awake
-            creationflags = 0
-            if sys.platform == "win32":
-                creationflags = 0x08000008  # DETACHED_PROCESS | CREATE_NO_WINDOW
-            process = subprocess.Popen(
-                cmd,
-                cwd=plan.cwd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-                start_new_session=True if sys.platform != "win32" else False,
-                close_fds=True
-            )
-            self.process, self.plan = process, plan
-            self.pid = process.pid
-            self.started = time.monotonic()
-            self.started_wall = time.time()
-            self.stopped = False
-            save_persisted_state({
-                "pid": process.pid,
-                "started": self.started_wall,
-                "duration": plan.seconds,
-                "mode": plan.mode,
-                "display": "-d" in str(plan.argv) or "d" in str(plan.argv),
-                "background": True
-            })
+            self.process = None
+            pid = spawn_detached_windows(cmd, plan.cwd) if sys.platform == "win32" else None
+            if pid is None:
+                # Launch detached so closing the terminal does not end Keep Awake.
+                creationflags = 0x08000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS | CREATE_NO_WINDOW
+                self.process = subprocess.Popen(
+                    cmd, cwd=plan.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, creationflags=creationflags,
+                    start_new_session=sys.platform != "win32", close_fds=True)
+                pid = self.process.pid
+            self.plan, self.stopped = plan, False
+            self.started, self.started_wall = time.monotonic(), time.time()
+            self.record = awake_state.record(
+                pid, started=self.started_wall, flags=plan.flags, display="d" in plan.flags,
+                duration=plan.seconds, mode=plan.mode, watch_pid=plan.watched_pid, cwd=str(plan.cwd),
+                background=True)
+            awake_state.save(self.record)
         else:
             process = subprocess.Popen(cmd, cwd=plan.cwd, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
             self.process, self.plan = process, plan
-            self.pid = process.pid
-            self.started, self.stopped = time.monotonic(), False
+            self.started, self.started_wall, self.stopped = time.monotonic(), None, False
             output = self.output = deque(maxlen=16)
             # Drain even when the screen is closed; retain at most 64 KiB of output.
             threading.Thread(target=self._read, args=(process.stdout, output), daemon=True).start()
@@ -295,70 +234,55 @@ class AwakeSession:
                     break
                 output.append(chunk)
 
+    @staticmethod
+    def _signal_group(process, sig):
+        try:
+            if hasattr(os, "killpg"):
+                os.killpg(process.pid, sig)
+            elif sig == getattr(signal, "SIGKILL", None) or sig is None:
+                process.kill()
+            else:
+                process.terminate()
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
     def stop(self):
-        remove_persisted_state()
-        if not self.running and not (self.process is not None and self.process.poll() is None):
-            self.stopped = True
-            return
+        was_running = self.running
         self.stopped = True
-        if self.process is not None:
-            process = self.process
-            try:
-                if hasattr(os, "killpg"):
-                    os.killpg(process.pid, signal.SIGTERM)
-                else:
-                    process.terminate()
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
+        record, self.record = self.record, None
+        if record is not None:
+            # Re-verified inside terminate(): a reused PID is never signalled.
+            awake_state.terminate(record)
+            awake_state.remove(only_if_pid=record["pid"])
+        process = self.process
+        if process is None or (not was_running and process.poll() is not None):
+            return
+        # On Windows the helper owns a kill-on-close job, so terminating it ends a wrapped command too.
+        self._signal_group(process, signal.SIGTERM)
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self._signal_group(process, getattr(signal, "SIGKILL", None))
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                try:
-                    if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
-                        os.killpg(process.pid, signal.SIGKILL)
-                    else:
-                        process.kill()
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    pass
-            try:
-                if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
-                    os.killpg(process.pid, signal.SIGKILL)
-                elif not hasattr(os, "killpg"):
-                    process.kill()
-            except (ProcessLookupError, PermissionError, OSError):
                 pass
-
-        if self.pid is not None and (self.process is None or self.process.pid != self.pid):
-            if sys.platform == "win32":
-                try:
-                    handle = ctypes.windll.kernel32.OpenProcess(0x0001, False, self.pid)
-                    if handle:
-                        ctypes.windll.kernel32.TerminateProcess(handle, 1)
-                        ctypes.windll.kernel32.CloseHandle(handle)
-                except Exception:
-                    pass
-            else:
-                try:
-                    os.kill(self.pid, signal.SIGTERM)
-                except OSError:
-                    pass
-            self.pid = None
+        # A utility can exit on TERM while a child ignores it. Remove remaining members of our
+        # private group, including caffeinate's monitor helper.
+        if hasattr(os, "killpg") and hasattr(signal, "SIGKILL"):
+            self._signal_group(process, signal.SIGKILL)
 
     def status(self):
-        if not self.running and not self.stopped and self.process is None and self.pid is None:
+        running = self.running
+        if not running and not self.stopped and self.process is None:
             return "No Keep Awake session running."
-        if self.running:
+        if running:
             remaining = self.remaining
             limit = f"{remaining}s remaining" if remaining is not None else {
                 "manual": "until stopped", "process": "until the watched PID exits", "command": "until the command exits"
             }[self.plan.mode if self.plan else "manual"]
             bg_label = " (background)" if self.background else ""
-            active_pid = self.pid or (self.process.pid if self.process else "?")
-            return f"Keep Awake active{bg_label} · PID {active_pid} · {limit}"
+            return f"Keep Awake active{bg_label} · PID {self.pid or '?'} · {limit}"
         if self.stopped:
             return "Keep Awake stopped."
         if self.process is not None:

@@ -291,7 +291,7 @@ def main():
     if args.stop_awake:
         from keep_awake import AwakeSession
         session = AwakeSession()
-        if not session.running:
+        if not session.poll():
             print("No active Keep Awake session found.")
             return 0
         session.stop()
@@ -301,26 +301,29 @@ def main():
     if args.status_awake:
         from keep_awake import AwakeSession
         session = AwakeSession()
+        session.poll()
         print(session.status())
         return 0
 
     if args.keep_awake:
-        from keep_awake import AwakeSession, plan_session
+        from keep_awake import AwakeSession, plan_session, stop_hint
         session = AwakeSession()
-        if session.running:
+        if session.poll():
             print(f"Keep Awake is already active: {session.status()}")
             return 0
         flags = ["i"]
         if args.display:
             flags.append("d")
         dur = str(args.duration) if args.duration else ""
-        plan = plan_session(flags=flags, mode="manual", duration=dur, background=True)
-        session.start(plan)
+        try:
+            plan = plan_session(flags=flags, mode="manual", duration=dur, background=True)
+            session.start(plan)
+        except (ValueError, RuntimeError, OSError) as exc:
+            print(f"System Steward: {exc}", file=sys.stderr)
+            return 1
         print(f"✓ {session.status()}")
-        print("  Memory: ~2-4 MB (optimized, 99% less than terminal TUI).")
-        print("  Persistence: Keeps running even if terminal closes.")
-        print("  Shutdown: Turns off automatically when computer turns off.")
-        print("  To stop: pwsh -File .\\keep-awake.ps1 -Stop  (or --stop-awake)")
+        print("  Persistence: Keeps running after this terminal closes; ends when the computer shuts down.")
+        print(f"  To stop: {stop_hint()}")
         return 0
 
     if not 0 < args.timeout < float("inf"):

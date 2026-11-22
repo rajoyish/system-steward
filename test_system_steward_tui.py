@@ -1,4 +1,5 @@
 """Textual integration tests; all deletions use temporary fake Library folders."""
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 from pathlib import Path
 import tempfile

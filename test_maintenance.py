@@ -1,8 +1,11 @@
 """Native maintenance tests: only temporary homes and fake backend processes."""
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 import json
 import os
 from pathlib import Path
+import shutil
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -37,7 +40,7 @@ class DiscoveryTests(unittest.TestCase):
         groups, warnings = maintenance.discover("clean", self.home)
         self.assertEqual({g.targets[0] for g in groups}, {cache.parent, log})
         self.assertTrue(warnings)
-        maintenance.trash_group(next(g for g in groups if g.targets == (cache.parent,)), self.home)
+        maintenance.trash_group(next(g for g in groups if g.targets == (cache.parent,)), self.home, backend="folder")
         self.assertFalse(cache.exists())
         self.assertTrue(protected.exists())
         self.assertTrue(outside.exists())
@@ -49,12 +52,43 @@ class DiscoveryTests(unittest.TestCase):
         path.rename(path.with_suffix(".old"))
         path.write_text("new")
         with self.assertRaisesRegex(ValueError, "changed"):
-            maintenance.trash_group(group, self.home)
+            maintenance.trash_group(group, self.home, backend="folder")
         self.assertTrue(path.exists())
         group = maintenance.candidate("Installer", [path], "test")
         (self.home / ".Trash").symlink_to(self.home / "Downloads")
         with self.assertRaisesRegex(ValueError, "redirected"):
-            maintenance.trash_group(group, self.home)
+            maintenance.trash_group(group, self.home, backend="folder")
+
+    def test_recycle_backend_receives_only_verified_targets(self):
+        first, second = self.put("Downloads/a.msi"), self.put("Downloads/b.exe")
+        group = maintenance.candidate("Installers", [first, second], "test")
+        recycled = []
+        moved = maintenance.trash_group(group, self.home, backend=lambda p: (recycled.append(p), p.unlink()))
+        self.assertEqual(recycled, [first, second])
+        self.assertEqual(moved, [(first, maintenance.RECYCLE_BIN), (second, maintenance.RECYCLE_BIN)])
+        self.assertFalse((self.home / ".Trash").exists())
+        # A target swapped after preview is refused before anything is recycled.
+        third = self.put("Downloads/c.iso")
+        group = maintenance.candidate("Installer", [third], "test")
+        third.rename(third.with_suffix(".old"))
+        third.write_text("replacement")
+        recycled.clear()
+        with self.assertRaisesRegex(ValueError, "changed"):
+            maintenance.trash_group(group, self.home, backend=recycled.append)
+        self.assertEqual(recycled, [])
+
+    def test_recycle_path_refuses_relative_and_wildcard_paths(self):
+        for path in ("relative/file.txt", str(self.home / "*.dmg")):
+            with self.subTest(path=path), self.assertRaises(ValueError):
+                maintenance.recycle_path(path)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows Recycle Bin")
+    def test_recycle_path_refuses_drives_without_a_recycle_bin(self):
+        with patch("ctypes.WinDLL") as dll:
+            dll.return_value.GetDriveTypeW.return_value = 4  # DRIVE_REMOTE
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                maintenance.recycle_path(self.put("Downloads/x.msi"))
+            dll.return_value.SHFileOperationW.assert_not_called()
 
     def test_artifacts_and_installers_leave_source_and_unrelated_builds(self):
         self.put("sites/project/package.json")
@@ -126,7 +160,11 @@ class NativeUITests(unittest.IsolatedAsyncioTestCase):
             cache.parent.mkdir(parents=True)
             cache.write_text("cache")
             data = {"health_score": 87, "health_score_msg": "Good", "cpu": {"usage": 12}, "network": None, "batteries": None}
-            with patch("maintenance_tui.SystemSampler.sample", return_value=data) as backend:
+            def fake_recycle(path):
+                (home / ".Trash").mkdir(exist_ok=True)
+                shutil.move(str(path), str(home / ".Trash" / path.name))
+            with patch("maintenance_tui.SystemSampler.sample", return_value=data) as backend, \
+                    patch("native_maintenance.recycle_path", side_effect=fake_recycle):
                 app = SystemStewardApp(root=root, home=home, timeout=3)
                 async with app.run_test(size=(140, 44)) as pilot:
                     await pilot.press("m")

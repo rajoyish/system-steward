@@ -1,4 +1,5 @@
 """Run with: python3 -m unittest -v"""
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import json
 import os
 from pathlib import Path

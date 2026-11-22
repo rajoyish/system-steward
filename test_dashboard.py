@@ -1,4 +1,5 @@
 """Native dashboard formatting, shortcut routing and responsive interactions."""
+import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 from pathlib import Path
 import tempfile

@@ -92,14 +92,14 @@ class KeepAwakeScreen(Screen):
             if self.query(f"#awake-{name}-label"):
                 self.query_one(f"#awake-{name}-label").display = visible
         note = {
-            "manual": "Use Stop session to end early. Background sessions persist when terminal closes (~2-4 MB memory) and turn off on shutdown.",
+            "manual": "Use Stop session to end early. Background sessions keep running after the terminal closes and end on shutdown.",
             "process": "Stops when this PID exits or the timer expires. Stopping this session leaves the watched process running.",
             "command": "Runs in the background without interactive input. Quotes group arguments; shell operators and expansions are not interpreted. Timer is unavailable. Stopping the session or quitting the app also stops the command."
         }.get(mode, "")
         self.query_one("#awake-mode-note", Static).update(note)
 
     def refresh_session(self):
-        running = self.session.running
+        running = self.session.poll()
         self.query_one("#awake-status", Static).update(Text(self.session.status() if available() else "Keep Awake is available on macOS only."))
         self.query_one("#awake-start", Button).disabled = running or self.stopping or not available()
         self.query_one("#awake-stop", Button).disabled = not running or self.stopping
@@ -130,7 +130,7 @@ class KeepAwakeScreen(Screen):
             return
         details = "Command:\n" + plan.command + "\n\nWorking folder:\n" + str(plan.cwd)
         if background:
-            details += "\n\nRuns in background (~2-4 MB RAM). Remains active even if you close the terminal or quit System Steward, and turns off when your computer turns off."
+            details += "\n\nRuns in the background. Remains active even if you close the terminal or quit System Steward, and ends when your computer shuts down."
         else:
             details += "\n\nNo power settings are changed. Leaving this screen keeps the session running. Quitting the app stops it."
         if mode == "command":
