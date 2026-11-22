@@ -304,7 +304,9 @@ def resource_score(data):
 
 
 class SystemSampler:
-    def __init__(self):
+    def __init__(self, platform=None):
+        # "win32" or "darwin"; injectable so either backend can be exercised on any host.
+        self.platform = platform or sys.platform
         self.previous_network = None
         self.previous_network_time = None
         self.previous_processes = None  # (monotonic time, winproc.usage_snapshot())
@@ -323,8 +325,7 @@ class SystemSampler:
                 data["unavailable"][label] = str(exc)
                 return None
 
-        is_mocked_mac = hasattr(MacHost, "assert_called") or hasattr(MacHost, "_mock_side_effect") or hasattr(MacHost, "return_value")
-        if sys.platform == "win32" and not is_mocked_mac:
+        if self.platform == "win32":
             host = attempt("System APIs", WindowsHost)
             if host:
                 import winproc

@@ -29,6 +29,22 @@ def sleeping_task(argv, **kwargs):
     return REAL_POPEN([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
 
 
+class DirectLauncher(keep_awake.Launcher):
+    """Runs the reviewed argv as-is in the foreground (tests patch subprocess.Popen underneath)."""
+
+    def command(self, plan):
+        return plan.argv
+
+    def detached(self, argv, cwd):
+        return None
+
+
+def use_direct_launcher(test):
+    patcher = patch("keep_awake.default_launcher", DirectLauncher)
+    patcher.start()
+    test.addCleanup(patcher.stop)
+
+
 class PlanTests(unittest.TestCase):
     def test_modes_flags_and_quoted_arguments(self):
         self.assertEqual(plan_session().argv, ("/usr/bin/caffeinate", "-i"))
@@ -57,6 +73,7 @@ class PlanTests(unittest.TestCase):
 
 class SessionTests(unittest.TestCase):
     def setUp(self):
+        use_direct_launcher(self)
         self.session = AwakeSession()
         self.addCleanup(self.session.stop)
         self.support = patch("keep_awake.available", return_value=True)
@@ -270,6 +287,17 @@ class HelperArgumentTests(unittest.TestCase):
             with self.subTest(args=bad), self.assertRaises(ValueError):
                 helper.parse_args(bad)
 
+    @unittest.skipUnless(sys.platform == "win32", "Windows helper dispatch")
+    def test_default_launcher_dispatches_to_windows_helper(self):
+        launcher = keep_awake.Launcher()
+        background = launcher.command(plan_session(("i", "d"), duration="60", background=True))
+        self.assertTrue(background[0].lower().endswith("pythonw.exe"))
+        self.assertTrue(background[1].endswith("windows_caffeinate.py"))
+        self.assertEqual(background[2:], ("--daemon", "-id", "-t", "60"))
+        foreground = launcher.command(plan_session())
+        self.assertTrue(foreground[0].lower().endswith("python.exe"))
+        self.assertNotIn("--daemon", foreground)
+
     def test_plan_flags_and_record_display(self):
         self.assertEqual(plan_session().flags, "i")
         self.assertEqual(plan_session(("d", "i")).flags, "id")
@@ -345,6 +373,9 @@ class OwnershipTests(unittest.TestCase):
 
 
 class AwakeUITests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        use_direct_launcher(self)
+
     async def wait_for(self, pilot, predicate):
         for _ in range(60):
             if predicate():

@@ -124,8 +124,46 @@ def spawn_detached_windows(cmd, cwd):
     return int(output) if result.returncode == 0 and output.isdigit() else None
 
 
+class Launcher:
+    """How a reviewed plan becomes processes on this OS.
+
+    AwakeSession only talks to this object, so tests can substitute a launcher instead of the
+    session detecting mocks. ``detached`` returns ``(pid, popen_or_None)`` or None when this
+    launcher cannot detach (the session then runs the plan in the foreground).
+    """
+
+    def command(self, plan):
+        argv = plan.argv
+        if sys.platform == "win32" and argv[0] == "/usr/bin/caffeinate" and not os.path.exists(argv[0]):
+            helper = str(Path(__file__).parent / "windows_caffeinate.py")
+            daemon = ("--daemon",) if plan.background and plan.mode != "command" else ()
+            argv = (helper_python(windowless=plan.background), helper, *daemon, *argv[1:])
+        return argv
+
+    def foreground(self, argv, cwd):
+        return subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+
+    def detached(self, argv, cwd):
+        if sys.platform == "win32":
+            pid = spawn_detached_windows(argv, cwd)
+            if pid is not None:
+                return pid, None
+        # Launch detached so closing the terminal does not end Keep Awake.
+        creationflags = 0x08000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS | CREATE_NO_WINDOW
+        process = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, creationflags=creationflags,
+                                   start_new_session=sys.platform != "win32", close_fds=True)
+        return process.pid, process
+
+
+def default_launcher():
+    return Launcher()
+
+
 class AwakeSession:
-    def __init__(self):
+    def __init__(self, launcher=None):
+        self.launcher = launcher or default_launcher()
         self.process = None
         self.plan = None
         self.started = None
@@ -210,27 +248,12 @@ class AwakeSession:
                 check_pid(int(plan.argv[-1]))
             except (ProcessLookupError, PermissionError) as exc:
                 raise ValueError("The watched PID is unavailable or cannot be inspected.") from exc
-        cmd = plan.argv
-        if sys.platform == "win32" and cmd and cmd[0] == "/usr/bin/caffeinate" and not os.path.exists(cmd[0]):
-            # If not being intercepted by a mock, dispatch via windows keep awake helper
-            if not hasattr(subprocess.Popen, "mock_calls"):
-                helper = str(Path(__file__).parent / "windows_caffeinate.py")
-                daemon = ("--daemon",) if plan.background and plan.mode != "command" else ()
-                cmd = (helper_python(windowless=plan.background), helper, *daemon, *cmd[1:])
-
-        self.background = plan.background
-        self.record = None
-        if plan.background and not hasattr(subprocess.Popen, "mock_calls"):
-            self.process = None
-            pid = spawn_detached_windows(cmd, plan.cwd) if sys.platform == "win32" else None
-            if pid is None:
-                # Launch detached so closing the terminal does not end Keep Awake.
-                creationflags = 0x08000008 if sys.platform == "win32" else 0  # DETACHED_PROCESS | CREATE_NO_WINDOW
-                self.process = subprocess.Popen(
-                    cmd, cwd=plan.cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, creationflags=creationflags,
-                    start_new_session=sys.platform != "win32", close_fds=True)
-                pid = self.process.pid
+        cmd = self.launcher.command(plan)
+        self.record, self._owned_check = None, None
+        launched = self.launcher.detached(cmd, plan.cwd) if plan.background else None
+        self.background = launched is not None
+        if launched is not None:
+            pid, self.process = launched
             self.plan, self.stopped = plan, False
             self.started, self.started_wall = time.monotonic(), time.time()
             self.record = awake_state.record(
@@ -239,8 +262,7 @@ class AwakeSession:
                 background=True)
             awake_state.save(self.record)
         else:
-            process = subprocess.Popen(cmd, cwd=plan.cwd, stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
+            process = self.launcher.foreground(cmd, plan.cwd)
             self.process, self.plan = process, plan
             self.started, self.started_wall, self.stopped = time.monotonic(), None, False
             output = self.output = deque(maxlen=16)

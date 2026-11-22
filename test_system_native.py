@@ -49,7 +49,7 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(resource_score({'cpu': {'usage': 95}, 'memory': {'used_percent': 90}, 'disks': [{'mount': '/', 'used_percent': 95}]})[0], 25)
 
     def test_failed_sampling_is_explicit_and_does_not_invent_a_score(self):
-        sampler = SystemSampler()
+        sampler = SystemSampler(platform="darwin")
         with patch('system_status.MacHost', side_effect=OSError('blocked')), patch('system_status.command', side_effect=OSError('blocked')):
             sample = sampler.sample()
         self.assertIsNone(sample['health_score'])
@@ -201,11 +201,15 @@ class NativeActionTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await system_actions.run_action(unknown)
             runner.assert_not_awaited()
-            await system_actions.run_action(system_actions.ACTIONS[0])
+            with patch('system_actions.Path.is_file', return_value=True):
+                await system_actions.run_action(system_actions.ACTIONS[0], platform='darwin')
             argv = runner.await_args.args[0]
             self.assertEqual(argv[0], '/usr/bin/osascript')
             self.assertIn('/usr/bin/dscacheutil', argv[-1])
             self.assertIn('«class badm»:true', argv[-1])
+            # Windows runs its own reviewed command for the same task, never the macOS script.
+            await system_actions.run_action(system_actions.ACTIONS[0], platform='win32')
+            self.assertEqual(runner.await_args.args[0], list(system_actions.WINDOWS_COMMANDS['dns']))
 
     async def test_touchid_refuses_changed_preview_and_verifies_after_native_write(self):
         sudo = b'auth include sudo_local\n'

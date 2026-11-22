@@ -111,23 +111,24 @@ def administrator_argv(script):
     return ("/usr/bin/osascript", "-e", source)
 
 
-async def run_action(action, output=None):
+WINDOWS_COMMANDS = {
+    "dns": ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Clear-DnsClientCache"),
+    "quicklook": ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "ie4uinit.exe -show"),
+    "launchservices": ("wsreset.exe", "-i"),
+    "spotlight": ("pwsh", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service WSearch -Force -ErrorAction SilentlyContinue"),
+}
+
+
+async def run_action(action, output=None, platform=None):
+    """Run one reviewed action. ``platform`` ("win32"/"darwin") defaults to this host."""
+    platform = platform or sys.platform
     if action not in ACTIONS:
         raise ValueError("Unknown maintenance action")
-    if sys.platform == "darwin" and any(not Path(argv[0]).is_file() for argv in action.commands):
+    if platform == "darwin" and any(not Path(argv[0]).is_file() for argv in action.commands):
         raise OSError("This action is unavailable on this macOS version")
-    is_mock = hasattr(run_process, "await_args") or hasattr(run_process, "assert_called")
-    if sys.platform == "win32" and not is_mock:
-        win_cmds = {
-            "dns": ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "Clear-DnsClientCache"],
-            "quicklook": ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "ie4uinit.exe -show"],
-            "launchservices": ["wsreset.exe", "-i"],
-            "spotlight": ["pwsh", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service WSearch -Force -ErrorAction SilentlyContinue"],
-        }
-        cmd = win_cmds.get(action.key)
-        if cmd:
-            await run_process(cmd, output, timeout=180)
-            return
+    if platform == "win32" and action.key in WINDOWS_COMMANDS:
+        await run_process(list(WINDOWS_COMMANDS[action.key]), output, timeout=180)
+        return
     if action.administrator:
         # Fixed executable paths and arguments from ACTIONS, quoted independently.
         script = "set -eu\n" + "\n".join(shlex.join(argv) for argv in action.commands)
