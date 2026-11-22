@@ -1,5 +1,6 @@
 """Cleanup tests use temporary fake Chrome profiles; never the real browser."""
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch, Mock
@@ -89,9 +90,17 @@ class ChromeCleanupTests(unittest.TestCase):
         self.assertTrue(target.exists())
         self.assertFalse(job.removed)
         self.assertIn("Chrome is running", job.errors[0])
-        with patch("chrome_cleanup.subprocess.run", return_value=Mock(returncode=2)):
-            with self.assertRaises(OSError):
-                chrome_running()
+        if sys.platform == "win32":
+            with patch("chrome_cleanup.windows_process_names", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(OSError, "cleanup was blocked"):
+                    chrome_running()
+            for names, expected in ((["explorer.exe", "chrome.exe"], True), (["msedge.exe"], False)):
+                with patch("chrome_cleanup.windows_process_names", return_value=names):
+                    self.assertEqual(chrome_running(), expected)
+        else:
+            with patch("chrome_cleanup.subprocess.run", return_value=Mock(returncode=2)):
+                with self.assertRaises(OSError):
+                    chrome_running()
 
     def test_relaunch_stops_remaining_cleanup(self):
         self.put(self.data / "Default/Cookies")

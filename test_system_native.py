@@ -65,6 +65,42 @@ class WindowsMetricTests(unittest.TestCase):
         sample_output = "Interface Statistics\n\nBytes                    1048576       524288\n"
         self.assertEqual(parse_netstat_windows(sample_output), {"Ethernet/Wi-Fi": (1048576, 524288)})
 
+    def test_top_processes_uses_cpu_share_between_samples(self):
+        import winproc
+        before = {(10, 1): ("busy.exe", 0, 100), (20, 1): ("idle.exe", 0, 100), (30, 1): ("reused.exe", 5_000_000, 100)}
+        after = {(10, 1): ("busy.exe", 2 * 10_000_000, 400), (20, 1): ("idle.exe", 0, 100),
+                 (30, 2): ("new-owner.exe", 9 * 10_000_000, 100)}  # same PID, different process
+        rows = winproc.top_processes(before, after, elapsed=1.0, total_ram=1000, cpu_count=4)
+        self.assertEqual([r["name"] for r in rows], ["busy", "idle"])  # reused PID has no baseline
+        self.assertEqual(rows[0]["cpu"], 50.0)  # 2 CPU-seconds in 1 s on 4 CPUs = 50 % of capacity
+        self.assertEqual(rows[0]["memory"], 40.0)
+        self.assertTrue(all(0 <= r["cpu"] <= 100 for r in rows))
+
+    @unittest.skipUnless(sys.platform == "win32", "native Windows APIs")
+    def test_native_process_and_network_readings(self):
+        import ctypes, os, winproc
+        self.assertEqual(ctypes.sizeof(winproc.MIB_IF_ROW2), 1352)  # netioapi.h layout guard
+        self.assertEqual(winproc.MIB_IF_TABLE2.Table.offset, 8)
+        names = winproc.process_names()
+        self.assertIn(os.path.basename(sys.executable).lower(), names)
+        snapshot = winproc.usage_snapshot()
+        self.assertTrue(any(pid == os.getpid() for pid, _ in snapshot))
+        for name, (rx, tx) in winproc.interface_counters().items():
+            self.assertIsInstance(name, str)
+            self.assertGreaterEqual(rx + tx, 0)
+
+    @unittest.skipUnless(sys.platform == "win32", "native Windows APIs")
+    def test_sampler_spawns_no_powershell(self):
+        sampler = SystemSampler()
+        real_run = subprocess.run
+        spawned = []
+        with patch("system_status.subprocess.run", side_effect=lambda argv, **kw: (spawned.append(argv), real_run(argv, **kw))[1]):
+            sampler.sample()
+            data = sampler.sample()
+        self.assertEqual(spawned, [], "dashboard sampling should not start child processes")
+        self.assertTrue(data["top_processes"])
+        self.assertLessEqual(max(p["cpu"] for p in data["top_processes"]), 100)
+
     def test_windows_live_host_and_drives(self):
         if sys.platform != "win32":
             return

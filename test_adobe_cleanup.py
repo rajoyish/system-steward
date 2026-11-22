@@ -1,5 +1,6 @@
 """Adobe cleanup always runs against fake Library folders in these tests."""
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -123,14 +124,24 @@ class AdobeCleanupTests(unittest.TestCase):
     def test_process_detection_and_unknown_status_block_cleanup(self):
         for command in ("/Applications/Adobe Photoshop 2026/Adobe Photoshop 2026.app/Contents/MacOS/Adobe Photoshop 2026",
                         "/Applications/Utilities/Adobe Creative Cloud/ACC/Creative Cloud.app/Contents/MacOS/Creative Cloud",
-                        "/Library/Application Support/Adobe/Adobe Desktop Common/ADS/Adobe Desktop Service"):
-            with self.subTest(command=command), patch("adobe_cleanup.subprocess.run", return_value=Mock(returncode=0, stdout=command)):
+                        "/Library/Application Support/Adobe/Adobe Desktop Common/ADS/Adobe Desktop Service",
+                        "photoshop.exe", "creative cloud.exe", "ccxprocess.exe", "adobe desktop service.exe"):
+            with self.subTest(command=command), patch("adobe_cleanup.running_process_names", return_value=[command]):
                 self.assertTrue(adobe_running())
-        with patch("adobe_cleanup.subprocess.run", return_value=Mock(returncode=0, stdout="/bin/zsh\n/usr/bin/python3")):
-            self.assertFalse(adobe_running())
-        with patch("adobe_cleanup.subprocess.run", return_value=Mock(returncode=1)):
+        for unrelated in (["/bin/zsh", "/usr/bin/python3"], ["explorer.exe", "python.exe", "bridgehost.exe"]):
+            with self.subTest(names=unrelated), patch("adobe_cleanup.running_process_names", return_value=unrelated):
+                self.assertFalse(adobe_running())
+        with patch("adobe_cleanup.running_process_names", side_effect=OSError("blocked")):
             with self.assertRaises(OSError):
                 adobe_running()
+        if sys.platform == "win32":
+            with patch("chrome_cleanup.windows_process_names", side_effect=OSError("denied")):
+                with self.assertRaisesRegex(OSError, "cleanup was blocked"):
+                    adobe_running()
+        else:
+            with patch("adobe_cleanup.subprocess.run", return_value=Mock(returncode=1)):
+                with self.assertRaises(OSError):
+                    adobe_running()
 
     def test_unapproved_root_cannot_be_forged_into_a_plan(self):
         keep = self.put("Application Support/Adobe/Common/ExportSettings/preset")

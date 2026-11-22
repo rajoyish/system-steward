@@ -3,6 +3,7 @@ import steward_test_env  # noqa: F401 - isolates the Keep Awake state folder
 import asyncio
 from pathlib import Path
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -98,6 +99,40 @@ class UITests(unittest.IsolatedAsyncioTestCase):
                 navigation.focus()
                 await pilot.press("right", "right")
                 await self.wait_for(pilot, lambda: app.group == "Apps")
+
+    async def test_scan_progress_updates_cells_without_rebuilding_the_table(self):
+        entries = [Entry("Small", str(self.root / "notes.md"), "Projects"),
+                   Entry("Large", str(self.root / "website"), "Projects")]
+        app = SystemStewardApp(home=self.home, timeout=3)
+        with patch("system_steward_tui.audit_entries", return_value=entries):
+            async with app.run_test(size=(140, 40)) as pilot:
+                await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
+                table = app.query_one("#files", DataTable)
+                await self.wait_for(pilot, lambda: table.row_count == 2)
+                with patch.object(app, "populate_table", wraps=app.populate_table) as rebuild, \
+                        patch.object(table, "update_cell", wraps=table.update_cell) as update:
+                    # Same order, new value: one row's cells change in place.
+                    order = list(app.visible_entries)
+                    first = app.visible_entries[order[0]]
+                    first.size += 1
+                    app.tick()
+                    rebuild.assert_not_called()
+                    self.assertTrue(all(call.args[0] == first.path for call in update.call_args_list))
+                    update.reset_mock()
+                    app.tick()  # nothing changed: no work at all
+                    update.assert_not_called()
+                    # Order change mid-scan is deferred, then applied once the interval has passed.
+                    app.scan.finished.clear()
+                    app.visible_entries[order[1]].size = first.size + 10 ** 9
+                    app.last_order = time.monotonic()
+                    app.tick()
+                    rebuild.assert_not_called()
+                    self.assertTrue(app.order_stale)
+                    app.last_order -= 5
+                    app.tick()
+                    rebuild.assert_called_once()
+                    self.assertEqual(list(app.visible_entries)[0], order[1])
+                    app.scan.finished.set()
 
     async def test_explorer_search_navigation_resize_and_export(self):
         app = self.app()

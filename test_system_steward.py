@@ -10,6 +10,7 @@ import time
 import unittest
 from unittest.mock import patch
 
+import system_steward
 from system_steward import Entry, Scan, children, du_command, pretty_path, audit_entries
 
 
@@ -44,7 +45,7 @@ class ScannerTests(unittest.TestCase):
                 process = spawn.return_value
                 process.communicate.return_value = ("48\t" + folder, None)
                 process.returncode = 1
-                scan = Scan([entry])
+                scan = Scan([entry], in_process=False)
                 self.assertTrue(scan.finished.wait(3))
                 scan.close()
             self.assertEqual(entry.status, "partial")
@@ -63,7 +64,7 @@ class ScannerTests(unittest.TestCase):
 
                 entry = Entry("slow", folder, "Projects")
                 with patch("system_steward.subprocess.Popen", side_effect=slow_process):
-                    scan = Scan([entry], timeout=30 if cancel else .05)
+                    scan = Scan([entry], timeout=30 if cancel else .05, in_process=False)
                     if cancel:
                         deadline = time.monotonic() + 2
                         while not processes and time.monotonic() < deadline:
@@ -75,6 +76,77 @@ class ScannerTests(unittest.TestCase):
                 self.assertTrue(processes)
                 self.assertTrue(all(p.poll() is not None for p in processes))
 
+class InProcessScanTests(unittest.TestCase):
+    """The Windows default: in-process walk, no child processes."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_counts_whole_clusters_and_never_spawns(self):
+        (self.root / "a").mkdir()
+        (self.root / "a" / "one").write_bytes(b"x" * 10)
+        (self.root / "a" / "two").write_bytes(b"x" * 5000)
+        cluster = system_steward.windows_cluster_size(self.root) if sys.platform == "win32" else 4096
+        with patch("system_steward.windows_cluster_size", return_value=cluster), \
+                patch("system_steward.subprocess.Popen") as spawn:
+            scan = Scan([Entry("a", str(self.root / "a"), "Projects")], in_process=True)
+            self.assertTrue(scan.finished.wait(5))
+            scan.close()
+        spawn.assert_not_called()
+        self.assertEqual(scan.entries[0].status, "done")
+        self.assertEqual(scan.entries[0].size, cluster * (1 + -(-5000 // cluster)))
+
+    def test_cloud_placeholders_and_compressed_files(self):
+        stat = lambda size, attributes: type("S", (), {"st_size": size, "st_file_attributes": attributes})()
+        self.assertEqual(system_steward.allocated_bytes(stat(10 ** 9, system_steward.FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS), "x", 4096), 0)
+        self.assertEqual(system_steward.allocated_bytes(stat(10 ** 9, system_steward.FILE_ATTRIBUTE_OFFLINE), "x", 4096), 0)
+        with patch("system_steward.windows_on_disk_size", return_value=5000) as on_disk:
+            self.assertEqual(system_steward.allocated_bytes(stat(10 ** 6, system_steward.FILE_ATTRIBUTE_COMPRESSED), "x", 4096), 8192)
+            on_disk.assert_called_once_with("x", 10 ** 6)
+        self.assertEqual(system_steward.allocated_bytes(stat(0, 0), "x", 4096), 0)
+        self.assertEqual(system_steward.allocated_bytes(stat(1, 0), "x", 4096), 4096)
+
+    @unittest.skipUnless(sys.platform == "win32", "junctions are Windows-only")
+    def test_junctions_are_not_followed_or_double_counted(self):
+        import _winapi
+        real = self.root / "real"
+        real.mkdir()
+        (real / "data").write_bytes(b"x" * 65536)
+        _winapi.CreateJunction(str(real), str(self.root / "current"))  # like Scoop's apps/<app>/current
+        size, status = system_steward.tree_usage(str(self.root))
+        self.assertEqual(status, "done")
+        self.assertEqual(size, system_steward.tree_usage(str(real))[0])
+
+    def test_unreadable_folder_is_partial_and_cancel_timeout_stop_the_walk(self):
+        for name in ("ok", "locked"):
+            (self.root / name).mkdir()
+            (self.root / name / "f").write_bytes(b"x")
+        real_scandir = os.scandir
+        def scandir(path):
+            if str(path).endswith("locked"):
+                raise PermissionError("denied")
+            return real_scandir(path)
+        with patch("system_steward.os.scandir", side_effect=scandir):
+            self.assertEqual(system_steward.tree_usage(str(self.root))[1], "partial")
+        for _ in range(system_steward.CHECK_EVERY * 2):
+            (self.root / "ok" / f"d{_}").mkdir()
+        import threading
+        cancelled = threading.Event()
+        cancelled.set()
+        self.assertEqual(system_steward.tree_usage(str(self.root), cancel=cancelled)[1], "cancelled")
+        self.assertEqual(system_steward.tree_usage(str(self.root), deadline=time.monotonic() - 1)[1], "timed out")
+
+    def test_single_file_and_symlink_roots(self):
+        target = self.root / "file.bin"
+        target.write_bytes(b"x" * 100)
+        size, status = system_steward.tree_usage(str(target))
+        self.assertEqual(status, "done")
+        self.assertGreaterEqual(size, 100)
+
+
+class LauncherTests(unittest.TestCase):
     def test_app_identity_and_version_launcher(self):
         from app_identity import APP_NAME, AUTHOR
         self.assertEqual(APP_NAME, "System Steward")

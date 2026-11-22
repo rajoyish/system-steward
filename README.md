@@ -214,7 +214,7 @@ The resource score is an app-defined estimate, not a hardware diagnostic. It sta
 
 ## Measurement limits
 
-Scanning is read-only. Deletion is available only through a confirmed cleanup action. Directory sizes use fast non-blocking native recursive traversal (`os.scandir`) on Windows, and allocated disk blocks from `du` on macOS, displayed in binary units. Scans use worker pools with cancellation and timeout protection. Navigation and quitting cancel the previous scan.
+Scanning is read-only. Deletion is available only through a confirmed cleanup action. Directory sizes are allocated disk space, displayed in binary units: on Windows an in-process `os.scandir` walk rounds each file to whole clusters, uses the real on-disk size of compressed and sparse files, counts OneDrive online-only placeholders as zero, and does not follow junctions or symlinks (so Scoop's `current` links and pnpm's `node_modules` are not double-counted); on macOS sizes come from `du`. Scans use worker pools with cancellation and timeout protection. Navigation and quitting cancel the previous scan.
 
 The measured total covers the selected locations, not the entire disk. The disk meter uses filesystem usage. Missing, unreadable, partial, and timed-out locations are labeled; partial sizes have an asterisk and can undercount. Cleanup estimates can differ from space actually reclaimed.
 

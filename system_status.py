@@ -307,6 +307,7 @@ class SystemSampler:
     def __init__(self):
         self.previous_network = None
         self.previous_network_time = None
+        self.previous_processes = None  # (monotonic time, winproc.usage_snapshot())
         self.hardware = None
 
     def sample(self):
@@ -326,6 +327,12 @@ class SystemSampler:
         if sys.platform == "win32" and not is_mocked_mac:
             host = attempt("System APIs", WindowsHost)
             if host:
+                import winproc
+                if self.previous_processes is None:
+                    # First sample: measure process CPU across the same short window as system CPU.
+                    snapshot = attempt("Processes", winproc.usage_snapshot)
+                    self.previous_processes = (time.monotonic(), snapshot) if snapshot is not None else None
+
                 def cpu():
                     before = host.cpu_ticks()
                     time.sleep(.15)
@@ -344,7 +351,10 @@ class SystemSampler:
                     data["uptime"] = f"{seconds // 86400}d {seconds // 3600 % 24}h {seconds // 60 % 60}m"
                 data["disks"] = attempt("Disks", windows_drives) or []
                 def network():
-                    counters = parse_netstat_windows(command(["netstat", "-e"]))
+                    try:
+                        counters = winproc.interface_counters()
+                    except OSError:
+                        counters = parse_netstat_windows(command(["netstat", "-e"]))
                     now = time.monotonic()
                     elapsed = now - self.previous_network_time if self.previous_network_time is not None else 0
                     result = network_rates(self.previous_network, counters, elapsed)
@@ -353,21 +363,14 @@ class SystemSampler:
                 data["network"] = attempt("Network", network) or []
                 data["batteries"] = attempt("Battery", host.power_status) or []
                 def processes():
-                    pwsh_cmd = [
-                        "pwsh", "-NoProfile", "-NonInteractive", "-Command",
-                        'Get-Process | Where-Object { $_.CPU -gt 0 } | Sort-Object CPU -Descending | Select-Object -First 10 | ForEach-Object { "$($_.Id) $($_.CPU) $($_.WorkingSet64) $($_.ProcessName)" }'
-                    ]
-                    output = command(pwsh_cmd, timeout=5)
-                    result = []
-                    for line in output.splitlines():
-                        parts = line.split(None, 3)
-                        if len(parts) == 4:
-                            pid = int(parts[0])
-                            cpu_val = round(float(parts[1]), 1)
-                            mem_bytes = float(parts[2])
-                            mem_pct = round((mem_bytes / total_ram * 100), 1) if total_ram else 0.0
-                            result.append({"pid": pid, "cpu": cpu_val, "memory": mem_pct, "name": parts[3]})
-                    return result
+                    # CPU share between this sample and the previous one (percent of total capacity),
+                    # not cumulative CPU seconds since each process started.
+                    now, snapshot = time.monotonic(), winproc.usage_snapshot()
+                    previous = self.previous_processes
+                    self.previous_processes = (now, snapshot)
+                    if previous is None:
+                        return []
+                    return winproc.top_processes(previous[1], snapshot, now - previous[0], total_ram, os.cpu_count())
                 data["top_processes"] = attempt("Processes", processes) or []
                 data["unavailable"]["GPU utilization / temperature"] = "Not exposed by the supported public sampling interfaces; no private sensor tools are used."
                 data["health_score"], data["health_score_msg"] = resource_score(data)

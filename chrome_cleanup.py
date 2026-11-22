@@ -31,12 +31,21 @@ PROFILE_TARGETS = frozenset(SITE_DIRS + CACHE_DIRS + tuple(
     for suffix in ("", "-journal", "-wal", "-shm")))
 
 
+def windows_process_names():
+    """Running executable names via one native Toolhelp snapshot (milliseconds, no PowerShell)."""
+    import winproc
+    return winproc.process_names()
+
+
 def chrome_running():
     """Check the browser and helpers, excluding the standalone crash reporter."""
     if sys.platform == "win32":
-        cmd = ["pwsh", "-NoProfile", "-Command", "if (Get-Process chrome -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"]
-    else:
-        cmd = ["pgrep", "-f", r"/Google Chrome[.]app/Contents/(MacOS/Google Chrome|Frameworks/.*/Google Chrome Helper)"]
+        # Called before every target during cleanup, so it must be cheap.
+        try:
+            return "chrome.exe" in windows_process_names()
+        except OSError as exc:
+            raise OSError("Cannot verify that Chrome is closed; cleanup was blocked") from exc
+    cmd = ["pgrep", "-f", r"/Google Chrome[.]app/Contents/(MacOS/Google Chrome|Frameworks/.*/Google Chrome Helper)"]
     try:
         result = subprocess.run(
             cmd,

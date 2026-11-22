@@ -71,19 +71,27 @@ def protected_tree(path):
     return False
 
 
-def adobe_running():
+def running_process_names():
+    """Executable names (Windows) or command paths (macOS) of running processes."""
+    blocked = "Cannot verify that Adobe apps are closed; cleanup was blocked"
     if sys.platform == "win32":
-        cmd = ["pwsh", "-NoProfile", "-Command", "Get-Process | Select-Object -ExpandProperty ProcessName -ErrorAction SilentlyContinue"]
-    else:
-        cmd = ["ps", "-axo", "comm="]
+        try:
+            from chrome_cleanup import windows_process_names
+            return windows_process_names()
+        except OSError as exc:
+            raise OSError(blocked) from exc
     try:
-        result = subprocess.run(cmd, capture_output=True,
+        result = subprocess.run(["ps", "-axo", "comm="], capture_output=True,
                                 text=True, errors="replace", timeout=5)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise OSError("Cannot verify that Adobe apps are closed; cleanup was blocked") from exc
+        raise OSError(blocked) from exc
     if result.returncode:
-        raise OSError("Cannot verify that Adobe apps are closed; cleanup was blocked")
-    return bool(any(ADOBE_PROCESS.search(line.strip()) for line in result.stdout.splitlines()))
+        raise OSError(blocked)
+    return result.stdout.splitlines()
+
+
+def adobe_running():
+    return any(ADOBE_PROCESS.search(line.strip()) for line in running_process_names())
 
 
 def approved_cache(library, path):

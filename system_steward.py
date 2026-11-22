@@ -210,9 +210,107 @@ def du_command(path):
     return [sys.executable, "-c", code, str(path)]
 
 
+FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200
+FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400
+FILE_ATTRIBUTE_COMPRESSED = 0x00000800
+FILE_ATTRIBUTE_OFFLINE = 0x00001000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000
+# OneDrive / cloud placeholders report their full size but occupy no local clusters.
+CLOUD_ONLY = FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+# NTFS-compressed, sparse and WOF-compacted files can occupy much less than their logical size.
+ON_DISK_SIZE_DIFFERS = FILE_ATTRIBUTE_SPARSE_FILE | FILE_ATTRIBUTE_COMPRESSED | FILE_ATTRIBUTE_REPARSE_POINT
+CHECK_EVERY = 64  # directories between cancellation / deadline checks
+
+
+def windows_cluster_size(path):
+    """Allocation unit of the volume holding ``path`` (4 KiB fallback)."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        sectors, sector_bytes, free, total = (wintypes.DWORD() for _ in range(4))
+        if ctypes.windll.kernel32.GetDiskFreeSpaceW(Path(path).anchor or None, ctypes.byref(sectors),
+                                                    ctypes.byref(sector_bytes), ctypes.byref(free), ctypes.byref(total)):
+            return max(512, sectors.value * sector_bytes.value)
+    except (OSError, AttributeError, ValueError):
+        pass
+    return 4096
+
+
+def windows_on_disk_size(path, fallback):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        get_size = ctypes.windll.kernel32.GetCompressedFileSizeW
+        get_size.argtypes = (wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD))
+        get_size.restype = wintypes.DWORD
+        high = wintypes.DWORD()
+        low = get_size(path, ctypes.byref(high))
+        if low == 0xFFFFFFFF and ctypes.GetLastError():
+            return fallback
+        return (high.value << 32) | low
+    except (OSError, AttributeError):
+        return fallback
+
+
+def allocated_bytes(stat, path, cluster):
+    """Disk space a file occupies, rounded to whole clusters like ``du`` on macOS."""
+    attributes = getattr(stat, "st_file_attributes", 0)
+    if attributes & CLOUD_ONLY:
+        return 0
+    size = stat.st_size
+    if attributes & ON_DISK_SIZE_DIFFERS:
+        size = windows_on_disk_size(path, size)
+    return -(-size // cluster) * cluster
+
+
+def tree_usage(path, cancel=None, deadline=None):
+    """Measure a file or folder in-process with an iterative scandir walk.
+
+    Never follows symlinks or junctions, so a link cannot redirect or double-count the scan.
+    Returns ``(bytes, status)`` where status is done, partial, cancelled or timed out.
+    """
+    cluster = windows_cluster_size(path)
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return 0, "unreadable"
+    if not os.path.isdir(path) or os.path.islink(path):
+        return (0 if os.path.islink(path) else allocated_bytes(info, path, cluster)), "done"
+    total, complete, visited = 0, True, 0
+    stack = [path]
+    while stack:
+        visited += 1
+        if visited % CHECK_EVERY == 0:
+            if cancel is not None and cancel.is_set():
+                return total, "cancelled"
+            if deadline is not None and time.monotonic() > deadline:
+                return total, "timed out"
+        try:
+            listing = os.scandir(stack.pop())
+        except OSError:
+            complete = False
+            continue
+        with listing:
+            for item in listing:
+                try:
+                    if item.is_symlink() or item.is_junction():
+                        continue
+                    if item.is_dir(follow_symlinks=False):
+                        stack.append(item.path)
+                    else:
+                        # On Windows DirEntry.stat() comes from the directory listing: no extra syscall.
+                        total += allocated_bytes(item.stat(follow_symlinks=False), item.path, cluster)
+                except OSError:
+                    complete = False
+    return total, "done" if complete else "partial"
+
+
 class Scan:
-    def __init__(self, entries, timeout=120):
+    def __init__(self, entries, timeout=120, in_process=None):
         self.entries, self.timeout = entries, timeout
+        # Windows measures inside this process (no interpreter per folder); macOS keeps `du`.
+        self.in_process = sys.platform == "win32" if in_process is None else in_process
         self.cancel = threading.Event()
         self.finished = threading.Event()
         self.started = time.monotonic()
@@ -225,6 +323,11 @@ class Scan:
         entry.status = "scanning"
         if not os.path.lexists(entry.path):
             entry.status = "missing"
+            return
+        if self.in_process:
+            size, status = tree_usage(entry.path, self.cancel, time.monotonic() + self.timeout)
+            entry.size = size
+            entry.status = status
             return
         process = None
         try:

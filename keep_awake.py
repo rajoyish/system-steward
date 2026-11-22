@@ -12,6 +12,8 @@ import time
 
 import awake_state
 
+OWNERSHIP_RECHECK = 2.0  # seconds a positive/negative ownership check is reused for status display
+
 
 def check_pid(pid):
     """Raise ProcessLookupError unless ``pid`` is a running process."""
@@ -131,6 +133,7 @@ class AwakeSession:
         self.stopped = False
         self.output = deque(maxlen=16)
         self.record = None          # verified background-session record (awake_state)
+        self._owned_check = None    # (pid, monotonic time, owned) cache for _record_owned()
         self.background = False
         self._load_persisted()
 
@@ -159,16 +162,27 @@ class AwakeSession:
         except ValueError:
             self.plan = None
 
+    def _record_owned(self):
+        """verify_owned(), cached briefly: on macOS each check spawns `ps` and the UI asks several
+        times per second. terminate() always re-verifies, so the cache never authorises a kill."""
+        if self.record is None:
+            return False
+        now = time.monotonic()
+        cached = self._owned_check
+        if cached is None or cached[0] != self.record["pid"] or now - cached[1] >= OWNERSHIP_RECHECK:
+            cached = self._owned_check = (self.record["pid"], now, awake_state.verify_owned(self.record))
+        return cached[2]
+
     @property
     def running(self):
         """Side-effect free: is our session process alive right now?"""
         if self.process is not None and self.process.poll() is None:
             return True
-        return self.record is not None and awake_state.verify_owned(self.record)
+        return self._record_owned()
 
     def poll(self):
         """Housekeeping for timers: end an expired session and forget a vanished one. Returns running."""
-        if self.record is not None and not awake_state.verify_owned(self.record):
+        if self.record is not None and not self._record_owned():
             awake_state.remove(only_if_pid=self.record["pid"])
             self.record = None
         if self.running and self.remaining == 0:
@@ -260,7 +274,7 @@ class AwakeSession:
     def stop(self):
         was_running = self.running
         self.stopped = True
-        record, self.record = self.record, None
+        record, self.record, self._owned_check = self.record, None, None
         if record is not None:
             # Re-verified inside terminate(): a reused PID is never signalled.
             awake_state.terminate(record)

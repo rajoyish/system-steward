@@ -4,6 +4,7 @@ import datetime
 import json
 from pathlib import Path
 import shutil
+import time
 
 from rich.text import Text
 from textual import on, work
@@ -27,6 +28,8 @@ from system_steward import GROUPS, GROUP_ICONS, Entry, Scan, audit_entries, chil
 
 # Seconds to wait for a cleanup worker to finish its current location when the screen closes.
 JOB_EXIT_GRACE = 5
+# While a scan runs, re-sort the storage table at most this often (seconds); values update every tick.
+ORDER_INTERVAL = 1.0
 
 
 def display_path(path):
@@ -434,7 +437,10 @@ class SystemStewardApp(App):
         self.search_text = ""
         self.by_size = True
         self.visible_entries = {}
-        self.snapshot = None
+        self.snapshot = None       # (view key, entry data) last applied to the table; None forces a rebuild
+        self.rendered = {}         # path -> signature of the cells currently shown
+        self.last_order = 0.0
+        self.order_stale = False
         self.active_path = None
         self.show_footprint = True
         self.dashboard_expanded = None
@@ -602,37 +608,76 @@ class SystemStewardApp(App):
         self.query_one("#measured", Static).update(size_label(measured))
         done = sum(entry.status not in ("queued", "scanning") for entry in self.scan.entries)
         self.query_one("#scan-status", Static).update(f"{'✓ Scan complete' if self.scan.finished.is_set() else '◐ Scanning'} · {done}/{len(self.scan.entries)} locations")
-        snapshot = (self.root, self.group, self.search_text, self.by_size,
-                    tuple((entry.path, entry.size, entry.status) for entry in self.scan.entries))
-        if snapshot != self.snapshot:
-            self.snapshot = snapshot
+        data = tuple((entry.path, entry.size, entry.status) for entry in self.scan.entries)
+        view = (id(self.scan), self.root, self.group, self.search_text, self.by_size, self.show_footprint)
+        if self.snapshot is None or self.snapshot[0] != view:
+            self.snapshot = (view, data)
             self.populate_table()
+        elif data != self.snapshot[1] or self.order_stale:
+            self.snapshot = (view, data)
+            self.update_rows()
+
+    def filtered_entries(self):
+        needle = self.search_text.casefold()
+        seen, entries = set(), []
+        for entry in self.scan.entries:
+            if entry.path in seen or (self.group != "All" and entry.group != self.group):
+                continue
+            if needle in (entry.name + " " + entry.path).casefold():
+                seen.add(entry.path)
+                entries.append(entry)
+        entries.sort(key=(lambda entry: (-entry.size, entry.name.casefold())) if self.by_size else lambda entry: entry.name.casefold())
+        return entries
+
+    def row_cells(self, entry, peak):
+        """(signature, {column: cell}) for one row; the signature detects which cells changed."""
+        bar_length = round(entry.size / peak * 10)
+        size = Text(size_label(entry.size) + (" *" if entry.status == "partial" else ""), style="#71e5bb")
+        size = size if entry.status in ("done", "partial") else Text("—", style="#8395a5")
+        status = Text(("✓ Ready" if entry.status == "done" else "◐ Scanning" if entry.status == "scanning" else clean(entry.status)),
+                      style="#8395a5" if entry.status in ("queued", "done") else "#edbf75")
+        cells = {"size": size, "status": status}
+        if self.show_footprint:
+            cells["share"] = Text("━" * bar_length, style="#96a6e8")
+        return (entry.size, entry.status, bar_length), cells
+
+    def update_rows(self):
+        """Apply scan progress without rebuilding the table (sorting at most once per second)."""
+        entries = self.filtered_entries()
+        if [entry.path for entry in entries] != list(self.visible_entries):
+            if self.scan.finished.is_set() or time.monotonic() - self.last_order >= ORDER_INTERVAL:
+                self.populate_table()
+                return
+            self.order_stale = True  # keep the current order for now; refresh values in place
+        else:
+            self.order_stale = False
+        table = self.query_one("#files", DataTable)
+        peak = max((entry.size for entry in entries), default=1) or 1
+        for entry in entries:
+            signature, cells = self.row_cells(entry, peak)
+            previous = self.rendered.get(entry.path)
+            if previous == signature:
+                continue
+            self.rendered[entry.path] = signature
+            for column, cell in cells.items():
+                table.update_cell(entry.path, column, cell)
+            if entry.path == self.active_path:
+                self.set_detail(entry)
 
     def populate_table(self):
         table = self.query_one("#files", DataTable)
         selected = self.active_path
-        entries = [entry for entry in self.scan.entries if (self.group == "All" or entry.group == self.group)
-                   and self.search_text.casefold() in (entry.name + " " + entry.path).casefold()]
-        seen_paths = set()
-        deduped = []
-        for entry in entries:
-            if entry.path not in seen_paths:
-                seen_paths.add(entry.path)
-                deduped.append(entry)
-        entries = deduped
-        entries.sort(key=(lambda entry: (-entry.size, entry.name.casefold())) if self.by_size else lambda entry: entry.name.casefold())
+        entries = self.filtered_entries()
         self.visible_entries = {entry.path: entry for entry in entries}
+        self.last_order, self.order_stale, self.rendered = time.monotonic(), False, {}
         table.clear()
         peak = max((entry.size for entry in entries), default=1) or 1
         for entry in entries:
             name = Text(f"{entry_icon(entry, bool(self.root))}  {clean(entry.name)}")
-            size = Text(size_label(entry.size) + (" *" if entry.status == "partial" else ""), style="#71e5bb")
-            size = size if entry.status in ("done", "partial") else Text("—", style="#8395a5")
-            bar = Text("━" * round(entry.size / peak * 10), style="#96a6e8")
-            status = Text(("✓ Ready" if entry.status == "done" else "◐ Scanning" if entry.status == "scanning" else clean(entry.status)),
-                          style="#8395a5" if entry.status in ("queued", "done") else "#edbf75")
-            cells = [name, size] + ([bar] if self.show_footprint else []) + [status]
-            table.add_row(*cells, key=entry.path)
+            signature, cells = self.row_cells(entry, peak)
+            self.rendered[entry.path] = signature
+            row = [name, cells["size"]] + ([cells["share"]] if self.show_footprint else []) + [cells["status"]]
+            table.add_row(*row, key=entry.path)
         if selected in self.visible_entries:
             table.move_cursor(row=list(self.visible_entries).index(selected))
         elif entries:
@@ -802,7 +847,8 @@ class SystemStewardApp(App):
         self.open_system_tool("awake")
 
     def refresh_awake_indicator(self):
-        if not self.screen_stack:
+        # The indicator lives on the base screen; skip work while another screen covers it.
+        if len(self.screen_stack) != 1:
             return
         running = self.awake.poll()
         for button in self.screen_stack[0].query("#keep-awake"):
