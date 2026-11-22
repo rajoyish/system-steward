@@ -82,6 +82,21 @@ def available():
     return False
 
 
+def helper_python(windowless=False):
+    """Interpreter for the stdlib-only Windows helper.
+
+    A venv's python.exe/pythonw.exe is a launcher that keeps running alongside a child interpreter,
+    doubling every session's processes. The helper needs no third-party packages, so run the base
+    interpreter directly when it is available.
+    """
+    base = Path(getattr(sys, "_base_executable", "") or sys.executable)
+    candidate = base.with_name("pythonw.exe" if windowless else "python.exe")
+    if candidate.is_file():
+        return str(candidate)
+    fallback = Path(sys.executable).with_name("pythonw.exe") if windowless else Path(sys.executable)
+    return str(fallback if fallback.is_file() else sys.executable)
+
+
 def stop_hint():
     if sys.platform == "win32":
         return "pwsh -File .\\keep-awake.ps1 -Stop  (or system-steward.ps1 --stop-awake)"
@@ -186,12 +201,8 @@ class AwakeSession:
             # If not being intercepted by a mock, dispatch via windows keep awake helper
             if not hasattr(subprocess.Popen, "mock_calls"):
                 helper = str(Path(__file__).parent / "windows_caffeinate.py")
-                py_exe = sys.executable
-                if plan.background:
-                    pythonw = Path(py_exe).parent / "pythonw.exe"
-                    if pythonw.exists():
-                        py_exe = str(pythonw)
-                cmd = (py_exe, helper, *cmd[1:])
+                daemon = ("--daemon",) if plan.background and plan.mode != "command" else ()
+                cmd = (helper_python(windowless=plan.background), helper, *daemon, *cmd[1:])
 
         self.background = plan.background
         self.record = None

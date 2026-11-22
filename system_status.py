@@ -1,6 +1,7 @@
 """Read-only macOS and Windows resource sampling using native system APIs and bundled tools."""
 import ctypes
 import datetime
+import functools
 import os
 from pathlib import Path
 import platform
@@ -11,19 +12,60 @@ import sys
 import time
 
 
+@functools.cache
+def _libsystem():
+    """Load and prototype libSystem once per process instead of on every 5 s sample."""
+    lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    lib.mach_host_self.restype = ctypes.c_uint
+    lib.host_statistics.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+    lib.host_statistics.restype = ctypes.c_int
+    lib.mach_port_deallocate.argtypes = [ctypes.c_uint, ctypes.c_uint]
+    lib.mach_port_deallocate.restype = ctypes.c_int
+    lib.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
+    lib.sysctlbyname.restype = ctypes.c_int
+    return lib
+
+
+@functools.cache
+def _kernel32():
+    # use_last_error=True makes ctypes.get_last_error() report the real Win32 error code.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    # The default c_int restype truncates the 64-bit tick count (negative uptime after ~24.8 days).
+    kernel32.GetTickCount64.restype = ctypes.c_uint64
+    return kernel32
+
+
+class MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_ulong),
+        ("dwMemoryLoad", ctypes.c_ulong),
+        ("ullTotalPhys", ctypes.c_uint64),
+        ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64),
+        ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64),
+        ("ullAvailVirtual", ctypes.c_uint64),
+        ("sullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
+
+
+class SYSTEM_POWER_STATUS(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_byte),
+        ("BatteryFlag", ctypes.c_byte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_byte),
+        ("BatteryLifeTime", ctypes.c_ulong),
+        ("BatteryFullLifeTime", ctypes.c_ulong),
+    ]
+
+
 class MacHost:
     """Darwin Mach host_statistics ABI from the macOS SDK's mach/host_info.h."""
     def __init__(self):
         if sys.platform != "darwin":
             raise OSError("Live system metrics require macOS")
-        self.lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-        self.lib.mach_host_self.restype = ctypes.c_uint
-        self.lib.host_statistics.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
-        self.lib.host_statistics.restype = ctypes.c_int
-        self.lib.mach_port_deallocate.argtypes = [ctypes.c_uint, ctypes.c_uint]
-        self.lib.mach_port_deallocate.restype = ctypes.c_int
-        self.lib.sysctlbyname.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t), ctypes.c_void_p, ctypes.c_size_t]
-        self.lib.sysctlbyname.restype = ctypes.c_int
+        self.lib = _libsystem()
 
     def sysctl(self, name):
         size = ctypes.c_size_t()
@@ -60,10 +102,7 @@ class WindowsHost:
     def __init__(self):
         if sys.platform != "win32":
             raise OSError("Live system metrics require Windows")
-        # use_last_error=True makes ctypes.get_last_error() report the real Win32 error code.
-        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        # The default c_int restype truncates the 64-bit tick count (negative uptime after ~24.8 days).
-        self.kernel32.GetTickCount64.restype = ctypes.c_uint64
+        self.kernel32 = _kernel32()
 
     def cpu_ticks(self):
         idle = ctypes.c_uint64()
@@ -74,18 +113,6 @@ class WindowsHost:
         return (idle.value, kernel.value, user.value)
 
     def memory_stats(self):
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_uint64),
-                ("ullAvailPhys", ctypes.c_uint64),
-                ("ullTotalPageFile", ctypes.c_uint64),
-                ("ullAvailPageFile", ctypes.c_uint64),
-                ("ullTotalVirtual", ctypes.c_uint64),
-                ("ullAvailVirtual", ctypes.c_uint64),
-                ("sullAvailExtendedVirtual", ctypes.c_uint64),
-            ]
         stat = MEMORYSTATUSEX()
         stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
         if not self.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
@@ -125,15 +152,6 @@ class WindowsHost:
         return int(ms // 1000)
 
     def power_status(self):
-        class SYSTEM_POWER_STATUS(ctypes.Structure):
-            _fields_ = [
-                ("ACLineStatus", ctypes.c_byte),
-                ("BatteryFlag", ctypes.c_byte),
-                ("BatteryLifePercent", ctypes.c_ubyte),
-                ("SystemStatusFlag", ctypes.c_byte),
-                ("BatteryLifeTime", ctypes.c_ulong),
-                ("BatteryFullLifeTime", ctypes.c_ulong),
-            ]
         s = SYSTEM_POWER_STATUS()
         if not self.kernel32.GetSystemPowerStatus(ctypes.byref(s)):
             return []

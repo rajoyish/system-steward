@@ -25,6 +25,9 @@ from keep_awake_tui import KeepAwakeScreen
 from cleanup_selection import cleanup_groups, selection_plan
 from system_steward import GROUPS, GROUP_ICONS, Entry, Scan, audit_entries, children, clean, entry_icon, pretty_path, report, size_label
 
+# Seconds to wait for a cleanup worker to finish its current location when the screen closes.
+JOB_EXIT_GRACE = 5
+
 
 def display_path(path):
     return Text(pretty_path(path))
@@ -406,7 +409,9 @@ class CleanupScreen(Screen):
             await asyncio.to_thread(self.scan.close)
         if self.job and not self.job.done.is_set():
             self.job.cancel.set()
-            await asyncio.to_thread(self.job.thread.join)
+            # The job stops after its current location. Bound the wait so one huge cache folder
+            # cannot hang app exit; the worker is a daemon thread and ends with the process.
+            await asyncio.to_thread(self.job.thread.join, JOB_EXIT_GRACE)
 
 
 class SystemStewardApp(App):

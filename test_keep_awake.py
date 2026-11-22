@@ -161,12 +161,63 @@ class WindowsCaffeinateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertGreaterEqual(elapsed, 0.4)
 
-    def test_windows_caffeinate_memory_trim_and_mb(self):
+    def test_private_memory_reading(self):
         import windows_caffeinate
-        windows_caffeinate.trim_memory()
         mem = windows_caffeinate.get_process_memory_mb(os.getpid())
-        if mem is not None:
-            self.assertGreater(mem, 0)
+        self.assertIsNotNone(mem)
+        self.assertGreater(mem, 0)
+        self.assertIsNone(windows_caffeinate.get_process_memory_mb(0))
+
+    def test_helper_stays_lean_and_uses_base_interpreter(self):
+        probe = "import sys, windows_caffeinate; print(sorted({'subprocess', 'keep_awake', 'threading'} & set(sys.modules)))"
+        result = subprocess.run([sys.executable, "-c", probe], cwd=Path(__file__).parent,
+                                capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.stdout.strip(), "[]", result.stderr)
+        exe = Path(keep_awake.helper_python(windowless=True))
+        self.assertTrue(exe.is_file())
+        self.assertEqual(exe.name.lower(), "pythonw.exe")
+        base = Path(getattr(sys, "_base_executable", sys.executable))
+        if base.with_name("pythonw.exe").is_file():
+            self.assertEqual(exe, base.with_name("pythonw.exe"))  # no venv launcher process in between
+
+    def test_wait_for_pid_returns_on_exit_and_on_timeout(self):
+        import windows_caffeinate
+        quick = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(.3)"])
+        start = time.monotonic()
+        windows_caffeinate.wait_for_pid(quick.pid, duration=10)
+        self.assertLess(time.monotonic() - start, 5)
+        quick.wait(timeout=5)
+        slow = REAL_POPEN([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            start = time.monotonic()
+            windows_caffeinate.wait_for_pid(slow.pid, duration=.4)
+            self.assertLess(time.monotonic() - start, 3)
+            self.assertIsNone(slow.poll())
+        finally:
+            slow.kill()
+            slow.wait(timeout=5)
+
+    def test_background_launch_status_and_stop_round_trip(self):
+        helper = Path(__file__).parent / "windows_caffeinate.py"
+        run = lambda *args: subprocess.run([sys.executable, str(helper), *args], capture_output=True,
+                                           text=True, timeout=30, cwd=Path(__file__).parent)
+        awake_state.remove()
+        started = run("-b", "-id", "-t", "60")
+        try:
+            self.assertEqual(started.returncode, 0, started.stderr)
+            record = awake_state.read_owned()
+            self.assertIsNotNone(record, "launcher must write a verified record")
+            self.assertTrue(record["display"])
+            self.assertIn("private memory", run("--status").stdout)
+            self.assertIn("already running", run("-b", "-i").stdout)
+        finally:
+            stopped = run("--stop")
+        self.assertIn("stopped", stopped.stdout)
+        deadline = time.monotonic() + 5
+        while awake_state.process_alive(record["pid"]) and time.monotonic() < deadline:
+            time.sleep(.05)
+        self.assertFalse(awake_state.process_alive(record["pid"]))
+        self.assertIsNone(awake_state.read_owned())
 
     def test_terminating_helper_also_ends_wrapped_command(self):
         """The helper's kill-on-close job must not orphan the user's command (no killpg on Windows)."""

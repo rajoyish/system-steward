@@ -173,7 +173,7 @@ Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d
 
 By default, Keep Awake runs in the background as a detached process:
 - **Persists after closing terminal:** You can safely close Warp, PowerShell, or the terminal window; Keep Awake continues running in the background.
-- **Small footprint:** the background helper is a single small Python process; you do not need to keep the TUI open.
+- **Small footprint:** the background helper is one stdlib-only Python process (about 10 MB private memory, no polling loop); you do not need to keep the TUI open. `keep-awake.ps1 -Status` shows its current memory.
 - **Turns off with computer:** When your computer shuts down, the background session ends and Windows power states reset naturally. No registry or startup entries are created.
 - **Safe stop:** the session record in `~/.system-steward/awake_session.json` stores the helper's PID together with its start time and executable, so Stop never terminates an unrelated process that later reuses the same PID.
 

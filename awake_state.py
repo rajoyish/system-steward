@@ -9,7 +9,6 @@ import ctypes
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import time
 
@@ -82,6 +81,7 @@ def _posix_identity(pid):
         return None
     except PermissionError:
         return {"alive": True, "create_time": None, "exe": None}
+    import subprocess  # only needed on POSIX; keeps the Windows helper's imports minimal
     try:
         result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart=", "-o", "comm="],
                                 capture_output=True, text=True, timeout=3, env={**os.environ, "LC_ALL": "C"})

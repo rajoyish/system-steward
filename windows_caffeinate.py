@@ -7,13 +7,13 @@ Usage (caffeinate-compatible subset):
 import ctypes
 from ctypes import wintypes
 import os
-from pathlib import Path
-import re
-import subprocess
 import sys
 import time
 
 import awake_state
+
+# subprocess / keep_awake are imported only by the code paths that need them, so a background
+# session that just holds the sleep assertion stays a minimal interpreter.
 
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
@@ -23,14 +23,19 @@ ES_AWAYMODE_REQUIRED = 0x00000040
 DETACHED_PROCESS = 0x00000008
 CREATE_NO_WINDOW = 0x08000000
 
-PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_VM_READ = 0x0010
+SYNCHRONIZE = 0x00100000
+WAIT_TIMEOUT = 0x00000102
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
 
 # caffeinate assertion letters; only "d" changes behavior here.
-FLAG_CLUSTER = re.compile(r"-[idmsu]+\Z")
+FLAG_LETTERS = frozenset("idmsu")
+
+
+def is_flag_cluster(arg):
+    return len(arg) > 1 and arg[0] == "-" and set(arg[1:]) <= FLAG_LETTERS
 
 
 class PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
@@ -96,21 +101,14 @@ if sys.platform == "win32":
     kernel32.SetInformationJobObject.restype = wintypes.BOOL
     kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
     psapi.GetProcessMemoryInfo.argtypes = (wintypes.HANDLE, ctypes.POINTER(PROCESS_MEMORY_COUNTERS_EX), wintypes.DWORD)
     psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
-    psapi.EmptyWorkingSet.argtypes = (wintypes.HANDLE,)
-    psapi.EmptyWorkingSet.restype = wintypes.BOOL
-
-
-def trim_memory():
-    """Trim unused pages from the working set."""
-    try:
-        psapi.EmptyWorkingSet(kernel32.GetCurrentProcess())
-    except (NameError, OSError):
-        pass
 
 
 def get_process_memory_mb(pid):
+    """Private (committed) memory of ``pid`` in MiB: the honest footprint, unlike the trimmable working set."""
     try:
         handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, False, int(pid))
     except (NameError, TypeError, ValueError, OSError):
@@ -121,7 +119,7 @@ def get_process_memory_mb(pid):
         counters = PROCESS_MEMORY_COUNTERS_EX()
         counters.cb = ctypes.sizeof(PROCESS_MEMORY_COUNTERS_EX)
         if psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
-            return round(counters.WorkingSetSize / (1024 * 1024), 1)
+            return round(counters.PrivateUsage / (1024 * 1024), 1)
         return None
     finally:
         kernel32.CloseHandle(handle)
@@ -146,6 +144,26 @@ def clear_awake_state():
 
 def is_pid_alive(pid):
     return awake_state.process_alive(pid)
+
+
+def wait_for_pid(pid, duration=None):
+    """Block until ``pid`` exits or ``duration`` seconds pass, without polling process state.
+
+    Waits on the process handle in 1 s slices only so Ctrl+C stays responsive in a console.
+    """
+    handle = kernel32.OpenProcess(SYNCHRONIZE, False, int(pid))
+    if not handle:
+        return
+    deadline = None if duration is None else time.monotonic() + duration
+    try:
+        while True:
+            slice_ms = 1000 if deadline is None else max(0, min(1000, int((deadline - time.monotonic()) * 1000)))
+            if kernel32.WaitForSingleObject(handle, slice_ms) != WAIT_TIMEOUT:
+                return  # process exited (or the wait failed)
+            if deadline is not None and time.monotonic() >= deadline:
+                return
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def kill_on_close_job():
@@ -198,7 +216,7 @@ def parse_args(args):
                 raise ValueError(f"invalid value for {arg}: {value}") from exc
             options["forward"].extend((arg, value))
             i += 1
-        elif FLAG_CLUSTER.match(arg):
+        elif is_flag_cluster(arg):
             options["display"] = options["display"] or "d" in arg
             options["forward"].append(arg)
         elif arg.startswith("-"):
@@ -226,7 +244,7 @@ def show_status():
         return 1
     pid = state.get("pid")
     mem = get_process_memory_mb(pid)
-    mem_str = f" · {mem} MB working set" if mem is not None else ""
+    mem_str = f" · {mem} MB private memory" if mem is not None else ""
     disp = " · Display kept awake" if state.get("display") else " · Display can sleep"
     remaining_str = ""
     if state.get("duration") and state.get("started"):
@@ -247,24 +265,30 @@ def stop_session():
 
 
 def launch_background(options):
+    """Start a detached copy of this helper. The launcher is the only writer of the session record."""
+    import subprocess
+    from keep_awake import helper_python, spawn_detached_windows
+
     existing = awake_state.read_owned()
     if existing:
         mem = get_process_memory_mb(existing["pid"])
-        mem_str = f" ({mem} MB working set)" if mem else ""
+        mem_str = f" ({mem} MB private memory)" if mem else ""
         print(f"Keep Awake is already running in background (PID: {existing['pid']}{mem_str}).")
         return 0
-    # Prefer pythonw.exe so no console window is attached.
-    pythonw = Path(sys.executable).parent / "pythonw.exe"
-    py_exe = str(pythonw) if pythonw.exists() else sys.executable
-    cmd = [py_exe, str(Path(__file__).resolve()), *options["forward"], "--daemon"]
-    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True)
-    time.sleep(0.1)
-    awake_state.save(awake_state.record(
-        proc.pid, flags=flags_of(options), display=options["display"], duration=options["duration"],
-        mode=session_mode(options), watch_pid=options["pid"], background=True))
+    cmd = [helper_python(windowless=True), os.path.abspath(__file__), *options["forward"], "--daemon"]
+    # WMI creation keeps the session outside the terminal's job, so closing the terminal cannot end it.
+    pid = spawn_detached_windows(cmd, os.getcwd())
+    if pid is None:
+        pid = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW, close_fds=True).pid
+    record = awake_state.record(
+        pid, flags=flags_of(options), display=options["display"], duration=options["duration"],
+        mode=session_mode(options), watch_pid=options["pid"], cwd=os.getcwd(), background=True)
+    if record["create_time"] is None or not awake_state.save(record):
+        print("windows_caffeinate: the background session did not start.", file=sys.stderr)
+        return 1
     disp_msg = "System & display sleep prevented." if options["display"] else "Idle system sleep prevented (display can sleep)."
-    print(f"✓ Keep Awake started in background (PID: {proc.pid}).")
+    print(f"✓ Keep Awake started in background (PID: {pid}).")
     print(f"  Mode: {disp_msg}")
     print("  Persistence: Keeps running after this terminal closes; ends when the computer shuts down.")
     print("  Commands: pwsh -File .\\keep-awake.ps1 -Stop  (or -Status)")
@@ -289,18 +313,14 @@ def main(argv=None):
     if options["background"] and not options["daemon"]:
         return launch_background(options)
 
-    if options["daemon"]:
-        awake_state.save(awake_state.record(
-            os.getpid(), flags=flags_of(options), display=options["display"], duration=options["duration"],
-            mode=session_mode(options), watch_pid=options["pid"], background=True))
-
     job = kill_on_close_job() if options["command"] else None  # noqa: F841 - kept open for our lifetime
     duration, pid = options["duration"], options["pid"]
+    # ES_CONTINUOUS keeps the request in force for this thread's lifetime; no refresh loop is needed.
     set_awake_state(options["display"])
-    trim_memory()
 
     try:
         if options["command"]:
+            import subprocess
             try:
                 proc = subprocess.Popen(options["command"])
             except OSError as exc:
@@ -308,37 +328,20 @@ def main(argv=None):
                 return 127
             return proc.wait()
         if pid:
-            start_time = time.monotonic()
-            loop_count = 0
-            while True:
-                if duration is not None and (time.monotonic() - start_time) >= duration:
-                    break
-                if not is_pid_alive(pid):
-                    break
-                time.sleep(0.5)
-                loop_count += 1
-                if loop_count % 60 == 0:
-                    trim_memory()
+            wait_for_pid(pid, duration)
         elif duration is not None:
-            start_time = time.monotonic()
-            loop_count = 0
-            while (time.monotonic() - start_time) < duration:
-                time.sleep(max(0.0, min(1.0, duration - (time.monotonic() - start_time))))
-                loop_count += 1
-                if loop_count % 60 == 0:
-                    trim_memory()
+            time.sleep(max(0.0, duration))  # interruptible by Ctrl+C
         else:
-            loop_count = 0
             while True:
-                time.sleep(1)
-                loop_count += 1
-                if loop_count % 30 == 0:
-                    set_awake_state(options["display"])
-                    trim_memory()
+                time.sleep(86400)
         return 0
+    except KeyboardInterrupt:
+        return 130
     finally:
         clear_awake_state()
         if options["daemon"]:
+            # The launcher wrote the record; remove it on a clean exit (TerminateProcess skips this,
+            # and readers discard the stale record because the PID is no longer ours).
             awake_state.remove(only_if_pid=os.getpid())
 
 
