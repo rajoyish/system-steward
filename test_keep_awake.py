@@ -377,8 +377,10 @@ class AwakeUITests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         use_direct_launcher(self)
 
-    async def wait_for(self, pilot, predicate):
-        for _ in range(60):
+    async def wait_for(self, pilot, predicate, timeout=15):
+        # Wall-clock deadline: background workers run slower while the whole suite is busy.
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             if predicate():
                 return
             await pilot.pause(.05)

@@ -144,8 +144,10 @@ class BackendTests(unittest.IsolatedAsyncioTestCase):
 
 
 class NativeUITests(unittest.IsolatedAsyncioTestCase):
-    async def wait_for(self, pilot, condition):
-        for _ in range(100):
+    async def wait_for(self, pilot, condition, timeout=15):
+        # Wall-clock deadline: background workers run slower while the whole suite is busy.
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             if condition():
                 await pilot.pause(.05)
                 return

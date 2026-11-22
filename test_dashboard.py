@@ -30,8 +30,10 @@ class MetricCardTests(unittest.TestCase):
 
 
 class DashboardUITests(unittest.IsolatedAsyncioTestCase):
-    async def wait_for(self, pilot, condition):
-        for _ in range(100):
+    async def wait_for(self, pilot, condition, timeout=15):
+        # Wall-clock deadline: background workers run slower while the whole suite is busy.
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
             if condition():
                 await pilot.pause(.05)
                 return
@@ -44,7 +46,7 @@ class DashboardUITests(unittest.IsolatedAsyncioTestCase):
             installer = home / "Downloads/example.dmg"
             installer.parent.mkdir()
             installer.write_text("fixture")
-            with patch("system_steward_tui.SystemSampler.sample", return_value=SAMPLE):
+            with patch("tui.app.SystemSampler.sample", return_value=SAMPLE):
                 app = SystemStewardApp(root=home, home=home, timeout=3)
                 async with app.run_test(size=(140, 48)) as pilot:
                     await self.wait_for(pilot, lambda: app.dashboard_sample is not None)
@@ -70,7 +72,7 @@ class DashboardUITests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / "notes.txt").write_text("fixture")
-            with patch("system_steward_tui.SystemSampler.sample", return_value=SAMPLE) as sampler:
+            with patch("tui.app.SystemSampler.sample", return_value=SAMPLE) as sampler:
                 app = SystemStewardApp(root=root, home=root, timeout=3)
                 async with app.run_test(size=(80, 24)) as pilot:
                     await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())

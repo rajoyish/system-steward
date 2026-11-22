@@ -56,7 +56,7 @@ class UITests(unittest.IsolatedAsyncioTestCase):
         path.write_text("fixture")
         return path
 
-    async def wait_for(self, pilot, condition, timeout=5):
+    async def wait_for(self, pilot, condition, timeout=15):
         deadline = asyncio.get_running_loop().time() + timeout
         while not condition() and asyncio.get_running_loop().time() < deadline:
             await pilot.pause(.05)
@@ -70,7 +70,7 @@ class UITests(unittest.IsolatedAsyncioTestCase):
         entries = [Entry("Browser cache", str(self.root / "notes.md"), "Browsers"),
                    Entry("Project", str(self.root / "website"), "Projects")]
         app = SystemStewardApp(home=self.home, timeout=3)
-        with patch("system_steward_tui.audit_entries", return_value=entries):
+        with patch("tui.app.audit_entries", return_value=entries):
             async with app.run_test(size=(140, 40)) as pilot:
                 await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
                 navigation = app.query_one("#navigation", Tabs)
@@ -104,7 +104,7 @@ class UITests(unittest.IsolatedAsyncioTestCase):
         entries = [Entry("Small", str(self.root / "notes.md"), "Projects"),
                    Entry("Large", str(self.root / "website"), "Projects")]
         app = SystemStewardApp(home=self.home, timeout=3)
-        with patch("system_steward_tui.audit_entries", return_value=entries):
+        with patch("tui.app.audit_entries", return_value=entries):
             async with app.run_test(size=(140, 40)) as pilot:
                 await self.wait_for(pilot, lambda: app.scan and app.scan.finished.is_set())
                 table = app.query_one("#files", DataTable)
@@ -160,7 +160,7 @@ class UITests(unittest.IsolatedAsyncioTestCase):
             await pilot.resize_terminal(140, 44)
             await pilot.pause()
             self.assertEqual(len(table.columns), 4)
-            with patch("system_steward_tui.Path.cwd", return_value=self.root):
+            with patch("tui.app.Path.cwd", return_value=self.root):
                 await pilot.click("#export")
             self.assertEqual(len(list(self.root.glob("system-steward-report-*.json"))), 1)
 
