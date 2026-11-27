@@ -14,7 +14,10 @@ from chrome_cleanup import safe_path
 
 COMMON_CACHES = frozenset(("Media Cache", "Media Cache Files", "Peak Files"))
 PROTECTED_NAMES = frozenset(("presets", "plugins", "plug-ins", "scripts", "preferences",
-                             "workspaces", "workspace", "catalogs", "catalogues"))
+                             "workspaces", "workspace", "catalogs", "catalogues",
+                             # Crash-recovery copies of unsaved documents and saved app state live inside
+                             # cache folders (InDesign keeps both under …\Caches); they are not disposable.
+                             "recovery", "indesign recovery", "indesign saveddata", "autosave", "auto-save"))
 DISK_CACHE = re.compile(
     r"(?:(?:.*[ _-])?disk[ _-]*cache|caches?|temp(?:orary)?(?:[ _-]*(?:cache|files|items))?)(?:[ ._-].*)?\Z", re.I)
 ADOBE_PROCESS = re.compile(
@@ -130,7 +133,11 @@ def approved_cache(library: Path, path: Path) -> bool:
             return True
         if parts[-1].casefold() == "video" and any(p.casefold() in ("lightroom", "lightroom classic") for p in parts):
             return True
-        if parts[-1] in ("InDesign", "Adobe InDesign") or bool(re.fullmatch(r"Adobe Camera Raw(?: \d+)?", parts[-1])):
+        # On Windows, AppData\Local\Adobe\InDesign is not a pure cache folder (it holds versioned app
+        # data); its real cache is the nested ...\Version N\<locale>\Caches, which DISK_CACHE matches.
+        if parts[-1] in ("InDesign", "Adobe InDesign") and parts[0] != "AppData":
+            return True
+        if re.fullmatch(r"Adobe Camera Raw(?: \d+)?", parts[-1]):
             return True
     return False
 

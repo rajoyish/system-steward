@@ -49,6 +49,20 @@ class Candidate:
     effect: str
 
 
+PROJECT_FOLDERS = ("sites", "Herd", "Projects", "code", "dev", "src", "source/repos", "Developer")
+
+
+def default_project_root(home: StrPath | None = None) -> Path:
+    """First common projects folder that exists (Laravel Herd uses ~/Herd), else ~/sites."""
+    home = Path(home or Path.home())
+    return next((home / name for name in PROJECT_FOLDERS if (home / name).is_dir()), home / "sites")
+
+
+def redirected(path: Path) -> bool:
+    """Symlinks, and Windows junctions such as Documents\\My Music (which only raise Access denied)."""
+    return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+
+
 def candidate(label: str, targets: Iterable[StrPath], effect: str) -> Candidate:
     paths = tuple(Path(p).absolute() for p in targets)
     for path in paths:
@@ -103,7 +117,7 @@ def discover(kind: str, home: StrPath | None = None, project_root: StrPath | Non
             for path in items(root):
                 add(f"{label} · {path.name}", [path], f"Move this cache or log folder to {TEXT.trash}. Quit the related app first; caches rebuild on next launch.")
     elif kind in ("installer", "purge"):
-        roots = [home / name for name in ("Downloads", "Desktop", "Documents")] if kind == "installer" else [Path(project_root or home / "sites").expanduser().absolute()]
+        roots = [home / name for name in ("Downloads", "Desktop", "Documents")] if kind == "installer" else [Path(project_root or default_project_root(home)).expanduser().absolute()]
         for root in roots:
             if not root.exists():
                 continue
@@ -116,7 +130,7 @@ def discover(kind: str, home: StrPath | None = None, project_root: StrPath | Non
                 if cancel and cancel.is_set():
                     return groups, warnings
                 parent = Path(current)
-                dirs[:] = sorted(d for d in dirs if d not in {".git", ".Trash", ".svn"} and not (parent / d).is_symlink())
+                dirs[:] = sorted(d for d in dirs if d not in {".git", ".Trash", ".svn"} and not redirected(parent / d))
                 if kind == "purge":
                     project = bool(MANIFESTS.intersection(files))
                     for name in list(dirs):
@@ -239,7 +253,7 @@ def status_rows(data: dict[str, Any]) -> list[tuple[str, str, str]]:
         for item in data.get(key) or []:
             label = str(item.get("mount") or item.get("name") or name)
             if key == "disks":
-                value = f"{size_label(item.get('used', 0))} / {size_label(item.get('total', 0))}"
+                value = f"{size_label(item.get('used', 0))} used of {size_label(item.get('total', 0))}"
             elif key == "batteries":
                 value = f"{item.get('percent', '—')}% · {item.get('status', '')}"
             elif key == "network":

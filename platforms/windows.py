@@ -548,6 +548,19 @@ def on_disk_size(path: str, fallback: int) -> int:
     return (high.value << 32) | low
 
 
+# SHFileOperationW returns Win32 error codes for most failures; name the common ones.
+SHELL_ERRORS = {
+    0x5: "access denied",
+    0x20: "it is open in another program (close that program, then retry)",
+    0x21: "part of it is locked by another program",
+    0x2: "it no longer exists",
+    0x3: "it no longer exists",
+    0x78: "access denied",  # DE_ACCESSDENIEDSRC
+    0x7C: "the path is not valid",  # DE_INVALIDFILES
+    0x4C7: "the operation was cancelled",
+}
+
+
 def recycle(path: str | os.PathLike[str]) -> None:
     """Send one reviewed path to the Recycle Bin (restorable from Explorer).
 
@@ -564,7 +577,8 @@ def recycle(path: str | os.PathLike[str]) -> None:
                                 fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI | FOF_WANTNUKEWARNING)
     result = api().shell32.SHFileOperationW(ctypes.byref(operation))
     if result or operation.fAnyOperationsAborted:
-        raise OSError(f"Could not move {path} to the Recycle Bin (shell error {result:#x})")
+        reason = SHELL_ERRORS.get(result, f"shell error {result:#x}")
+        raise OSError(f"Could not move {path} to the Recycle Bin: {reason}")
     if os.path.lexists(path):
         raise OSError(f"{path} is still present after moving it to the Recycle Bin")
 

@@ -17,13 +17,26 @@ class CleanupGroup:
     effect: str
 
 
+def adobe_label(plan: AdobePlan, root: Path) -> str:
+    """Name a cache by where it lives ("Acrobat › DC › Cache"), so same-named caches stay distinct."""
+    try:
+        parts = root.relative_to(plan.data_root).parts
+    except ValueError:
+        return root.name
+    if "Adobe" in parts:
+        parts = parts[len(parts) - parts[::-1].index("Adobe"):]
+    elif parts and parts[0] == "Caches":
+        parts = parts[1:]
+    return " › ".join(parts) or root.name
+
+
 def cleanup_groups(kind: str, plan: Plan, scope: str = "cache") -> list[CleanupGroup]:
     buckets = {}
     if kind == "Adobe":
         for root in plan.cache_dirs:
             targets = tuple(path for path in plan.targets if path.parent == root)
             if targets:
-                buckets[str(root)] = CleanupGroup(root.name, root, targets,
+                buckets[str(root)] = CleanupGroup(adobe_label(plan, root), root, targets,
                     "Clears cache contents. Adobe rebuilds these files when needed. The cache folder itself stays.")
     else:
         for path in plan.targets:

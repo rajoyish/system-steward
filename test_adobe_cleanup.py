@@ -176,6 +176,44 @@ class AdobeCleanupTests(unittest.TestCase):
         self.assertTrue(export_preset.exists())
         self.assertTrue(protected_catalog.exists())
 
+    def test_windows_indesign_recovery_and_saved_data_are_kept(self):
+        local = self.home / "AppData/Local/Adobe/InDesign/Version 21.0"
+        caches = local / "en_US/Caches"
+        disposable = [caches / "FontMaskCache", caches / "GPULog/log.txt", caches / "InDesign ClipboardScrap1"]
+        kept = [caches / "InDesign Recovery/doc.idlk", caches / "InDesign SavedData", local / "AdobeWLCMCache.dat"]
+        (self.home / "AppData/Roaming/Adobe").mkdir(parents=True)
+        for path in disposable + kept:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture")
+        plan = build_plan(self.home)
+        self.assertNotIn(local, plan.targets)
+        self.assertNotIn(self.home / "AppData/Local/Adobe/InDesign", plan.cache_dirs)
+        self.assertIn(caches, plan.cache_dirs)
+        self.assertIn(caches / "InDesign Recovery", plan.skipped)
+        self.assertIn(caches / "InDesign SavedData", plan.skipped)
+        result = self.job(plan)
+        self.assertFalse(result.errors)
+        self.assertTrue(all(not path.exists() for path in disposable))
+        self.assertTrue(all(path.read_text() == "fixture" for path in kept))
+
+    def test_mac_recovery_folder_keeps_its_whole_candidate(self):
+        recovery = self.put("Caches/Adobe InDesign/Version 21.0/en_US/InDesign Recovery/doc")
+        plan = build_plan(self.home)
+        self.assertNotIn(recovery, plan.targets)
+        self.job(plan)
+        self.assertTrue(recovery.exists())
+
+    def test_adobe_groups_are_named_by_location(self):
+        from cleanup_selection import cleanup_groups
+        for relative in ("AppData/Local/Adobe/Acrobat/DC/Cache/a.lst",
+                         "AppData/Local/Adobe/Acrobat/Distiller DC/Cache/b.lst",
+                         "AppData/Roaming/Adobe/Common/Media Cache/c.mcdb"):
+            path = self.home / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("fixture")
+        labels = {group.label for group in cleanup_groups("Adobe", build_plan(self.home))}
+        self.assertEqual(labels, {"Acrobat › DC › Cache", "Acrobat › Distiller DC › Cache", "Common › Media Cache"})
+
 
 if __name__ == "__main__":
     unittest.main()

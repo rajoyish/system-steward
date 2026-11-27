@@ -207,7 +207,8 @@ def metric_cards(data):
     disk = startup_disk(data)
     if disk and disk.get("total"):
         free = disk["total"] - disk.get("used", 0)
-        cards["disk"] = (f"{disk['used_percent']:.0f}% used", f"{size_label(free).split()[0]} of {size_label(disk['total'])} free" if size_label(free).split()[-1] == size_label(disk['total']).split()[-1] else f"{size_label(free)} free of {size_label(disk['total'])}",
+        # "free" right after the number: narrow cards cut the end, and "60.6 of 227.7 G…" reads as used space.
+        cards["disk"] = (f"{disk['used_percent']:.0f}% used", f"{size_label(free)} free of {size_label(disk['total'])}",
                          disk["used_percent"], False)
     else:
         cards["disk"] = ("Unavailable", None, None, False)

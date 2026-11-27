@@ -88,7 +88,7 @@ class MaintenanceScreen(Screen):
                 yield Select([(f"Every {n}s", n) for n in (3, 5, 10, 30)], value=5, allow_blank=False, id="health-interval")
                 yield Button("↻ Refresh", id="maintenance-refresh")
             yield Static("", id="maintenance-summary")
-            yield Input(placeholder="Folder to analyze / scan for developer artifacts", value=str(self.start_root or self.home / "sites"), id="maintenance-path")
+            yield Input(placeholder="Folder to analyze / scan for developer artifacts", value=str(self.start_root or maintenance.default_project_root(self.home)), id="maintenance-path")
             yield Static("", id="maintenance-note")
             yield DataTable(id="health-table", cursor_type="row", zebra_stripes=True)
             yield SelectionList(id="maintenance-list")

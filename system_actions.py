@@ -41,12 +41,12 @@ MAC_ACTIONS = (
 
 # Windows equivalents. These are what actually runs on Windows, so the review screen shows them.
 WINDOWS_ACTIONS = (
-    Action("dns", "Flush DNS resolver cache", "Clear cached name lookups. Use for name-resolution problems; lookups may briefly slow while the cache refills.",
+    Action("dns", "Flush DNS resolver cache", "Clear cached name lookups. Use for name-resolution problems; lookups may briefly slow while the cache refills. Some Windows versions ask for administrator approval.",
            (("ipconfig.exe", "/flushdns"),)),
     Action("iconcache", "Refresh icon cache", "Ask Windows to rebuild its icon cache so stale or wrong icons refresh. Explorer may redraw briefly.",
            (("ie4uinit.exe", "-show"),)),
-    Action("store", "Repair Microsoft Store", "Run wsreset -i, which clears the Store cache and reinstalls the Store app if it is missing or broken. The Store may open when it finishes.",
-           (("wsreset.exe", "-i"),)),
+    Action("store", "Repair Microsoft Store", "Run wsreset -i, which clears the Store cache and reinstalls the Store app if it is missing or broken. The Store may open when it finishes. Needs administrator approval.",
+           (("wsreset.exe", "-i"),), True),
     Action("search", "Restart Windows Search indexer", "Restart the Windows Search service (WSearch). Search results may be incomplete for a moment while it resumes. Needs administrator approval.",
            (("pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", "Restart-Service WSearch -Force"),), True),
 )
@@ -155,6 +155,12 @@ def windows_elevated_argv(argv: Sequence[str]) -> tuple[str, ...]:
     return ("pwsh.exe", "-NoProfile", "-NonInteractive", "-Command", script)
 
 
+def needs_elevation(message: str) -> bool:
+    """Windows' "requires elevation" output (ERROR_ELEVATION_REQUIRED is exit status 740)."""
+    lowered = message.casefold()
+    return "requires elevation" in lowered or "exited with status 740" in lowered
+
+
 def action_available(action: Action, platform: str | None = None) -> bool:
     """Whether the action's programs exist here (absolute macOS paths, or Windows programs on PATH)."""
     if (platform or sys.platform) == "win32":
@@ -171,7 +177,20 @@ async def run_action(action: Action, output: Output | None = None, platform: str
         raise OSError("This action is unavailable on this macOS version")
     if platform == "win32":
         for argv in action.commands:
-            await run_process(list(windows_elevated_argv(argv) if action.administrator else argv), output, timeout=180)
+            if action.administrator:
+                await run_process(list(windows_elevated_argv(argv)), output, timeout=180)
+                continue
+            try:
+                await run_process(list(argv), output, timeout=180)
+            except (RuntimeError, OSError) as exc:
+                # Some Windows builds (e.g. ipconfig /flushdns on recent Insider builds) newly require
+                # elevation; ask through the standard UAC prompt instead of failing the whole run.
+                # A program whose manifest demands elevation fails to start with WinError 740.
+                if getattr(exc, "winerror", None) != 740 and not needs_elevation(str(exc)):
+                    raise
+                if output:
+                    output("Windows requires administrator approval for this step; asking with a UAC prompt…")
+                await run_process(list(windows_elevated_argv(argv)), output, timeout=180)
         return
     if action.administrator:
         # Fixed executable paths and arguments from ACTIONS, quoted independently.

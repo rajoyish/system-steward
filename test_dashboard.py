@@ -35,7 +35,7 @@ class MetricCardTests(unittest.TestCase):
                   "batteries": [{"percent": 40, "status": "discharging", "time_left": "2:10 remaining"}],
                   "uptime": "1d 2h 3m"}
         cards = metric_cards(sample)
-        self.assertEqual(cards["disk"][:3], ("75% used", "25.0 of 100.0 GiB free", 75.0))
+        self.assertEqual(cards["disk"][:3], ("75% used", "25.0 GiB free of 100.0 GiB", 75.0))
         self.assertEqual(cards["cpu"][1], "load 1.50 · 8 cores")
         self.assertEqual(cards["memory"][1], "8.0 GiB of 16.0 GiB")
         self.assertEqual(cards["power"][:3], ("40%", "discharging, 2:10 remaining", 40))

@@ -230,6 +230,28 @@ class NativeActionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("-Verb RunAs", elevated[-1])
             self.assertIn("'Restart-Service WSearch -Force'", elevated[-1])
 
+    async def test_windows_task_that_newly_needs_elevation_retries_through_uac(self):
+        dns = system_actions.WINDOWS_ACTIONS[0]
+        calls = []
+
+        async def runner(argv, output=None, timeout=180):
+            calls.append(argv)
+            if len(calls) == 1:
+                raise RuntimeError("Command exited with status 1: The requested operation requires elevation.")
+            return ""
+        messages = []
+        with patch('system_actions.run_process', runner):
+            await system_actions.run_action(dns, messages.append, platform='win32')
+        self.assertEqual(calls[0], ['ipconfig.exe', '/flushdns'])
+        self.assertIn("-Verb RunAs", calls[1][-1])
+        self.assertIn("'ipconfig.exe'", calls[1][-1])
+        self.assertTrue(any("UAC" in line for line in messages))
+        # Other failures are not retried elevated.
+        with patch('system_actions.run_process', AsyncMock(side_effect=RuntimeError("Command exited with status 2: boom"))) as failing:
+            with self.assertRaisesRegex(RuntimeError, "boom"):
+                await system_actions.run_action(dns, platform='win32')
+            self.assertEqual(failing.await_count, 1)
+
     def test_windows_elevation_quotes_every_argument_literally(self):
         script = system_actions.windows_elevated_argv(("tool.exe", "it's", "$(bad)"))[-1]
         self.assertIn("-FilePath 'tool.exe'", script)
