@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: RajeshBudhathoki.SystemSteward
+PackageVersion: 3.0.1
+InstallerType: inno
+Scope: user
+InstallModes:
+- interactive
+- silent
+- silentWithProgress
+UpgradeBehavior: install
+Commands:
+- system-steward
+Installers:
+- Architecture: x64
+  InstallerUrl: https://github.com/rajoyish/system-steward/releases/download/v3.0.1/system-steward-3.0.1-windows-x64-setup.exe
+  InstallerSha256: CA5E314433BE0FFED627B8DF2E756785D5FD89DF2D3DB2848D12FEB4AD34B9AC
+ManifestType: installer
+ManifestVersion: 1.6.0
