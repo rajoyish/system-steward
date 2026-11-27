@@ -2,8 +2,8 @@
 class SystemSteward < Formula
   desc "Terminal app for storage analysis, cleanup and system maintenance on macOS and Windows"
   homepage "https://rajoyish.github.io/system-steward/"
-  url "https://github.com/rajoyish/system-steward/releases/download/v3.0.1/system-steward-3.0.1.tar.gz"
-  sha256 "16d79fc02479ba4fb72332d61343dafc7503a1f8fc37ad58a50294c9e081904f"
+  url "https://github.com/rajoyish/system-steward/releases/download/v3.0.2/system-steward-3.0.2.tar.gz"
+  sha256 "2674e74704fa00d2fb45cb5c06af09112288da9f931d7ddb3221f51e95ef8f59"
   license "MIT"
 
   depends_on :macos

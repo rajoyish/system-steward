@@ -1,13 +1,13 @@
 {
-    "version": "3.0.1",
+    "version": "3.0.2",
     "description": "Terminal app for storage analysis, cleanup and system maintenance on macOS and Windows",
     "homepage": "https://rajoyish.github.io/system-steward/",
     "license": "MIT",
     "notes": "Run 'system-steward' in a new terminal. 'system-steward --help' lists command-line options.",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/rajoyish/system-steward/releases/download/v3.0.1/system-steward-3.0.1-windows-x64.zip",
-            "hash": "a66450e876f06ee6181f0d44a352ad8d19d60446128a1f0c59ca3b7cd80fc17d"
+            "url": "https://github.com/rajoyish/system-steward/releases/download/v3.0.2/system-steward-3.0.2-windows-x64.zip",
+            "hash": "cec481c31848a0c33df00be14e9389f662bfd10eabf0b39667c5ea939654419b"
         }
     },
     "extract_dir": "system-steward",
