@@ -46,6 +46,16 @@ Then run `system-steward` in a new terminal.
 | `install.sh` | run it again | `curl -fsSL https://rajoyish.github.io/system-steward/install.sh \| sh -s -- --uninstall` |
 | `install.ps1` | run it again | `& ([scriptblock]::Create((irm https://rajoyish.github.io/system-steward/install.ps1))) -Uninstall` |
 
+### Automatic updates
+
+Homebrew, Scoop and winget installs check for a new release when the app starts, at most once a day. The check reads the version that channel itself offers, so you're only asked once your package manager can install it. When there is one, System Steward asks:
+
+- **Update now** closes the app, runs `brew upgrade`, `scoop update` or `winget upgrade` in the same terminal, then reopens the new version. On Windows, a running Keep Awake session is stopped first so its files can be replaced.
+- **Later** asks again at the next launch.
+- **Skip this version** stops asking until a newer release comes out.
+
+`system-steward --update` checks and updates right away. Set `SYSTEM_STEWARD_NO_UPDATE_CHECK=1` to turn the check off. Source checkouts and the `install.sh` / `install.ps1` installs don't check; update those as shown above. Versions before 3.0.3 don't have this, so update to 3.0.3 once with the command above.
+
 ## Run from source
 
 ### Windows (PowerShell 7 & Scoop)

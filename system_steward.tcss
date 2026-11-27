@@ -135,6 +135,9 @@ ModalScreen { background: #05090db3; align: center middle; }
 #confirm-status { height: auto; min-height: 1; color: #edbf75; margin-bottom: 1; }
 .dialog-actions { height: 3; align-horizontal: right; }
 .dialog-actions Button { margin-left: 1; }
+#update-dialog { height: auto; }
+#update-dialog Static { height: auto; margin-bottom: 1; }
+#update-warning { color: #edbf75; }
 #info-dialog { height: 80%; }
 #info-dialog VerticalScroll { height: 1fr; }
 #info-dialog Static { height: auto; }

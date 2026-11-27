@@ -26,7 +26,8 @@ from strings import TEXT
 from system_status import SystemSampler
 from system_steward import GROUP_ICONS, GROUPS, Scan, audit_entries, children, clean, entry_icon, report, size_label
 from tui.cleanup_screen import CleanupScreen
-from tui.dialogs import InfoDialog, display_path
+from tui.dialogs import InfoDialog, UpdateDialog, display_path
+import updater
 
 # While a scan runs, re-sort the storage table at most this often (seconds); values update every tick.
 ORDER_INTERVAL = 1.0
@@ -60,9 +61,11 @@ class SystemStewardApp(App):
                 Binding("k", "keep_awake", "Keep awake", show=False),
                 Binding("?", "help", "Help"), Binding("q", "quit", "Quit"), Binding("ctrl+c", "quit", "Quit", show=False)]
 
-    def __init__(self, root=None, timeout=120, home=None):
+    def __init__(self, root=None, timeout=120, home=None, check_updates=False):
         super().__init__()
         self.root, self.timeout, self.home = root, timeout, home
+        self.check_updates = check_updates
+        self.pending_update = None  # set when the person chooses "Update now"; main() applies it after exit
         self.scan = None
         self.stack = []
         self.group = "All"
@@ -169,6 +172,31 @@ class SystemStewardApp(App):
         self.set_interval(1, self.refresh_awake_indicator)
         self.action_view(self.view, force=True)
         self.refresh_awake_indicator()
+        if self.check_updates and updater.checks_enabled():
+            self.run_worker(self.look_for_update(), exclusive=True, group="update")
+
+    # ── Updates ────────────────────────────────────────────────────────────
+
+    async def look_for_update(self, channel=None):
+        update = await asyncio.to_thread(updater.check, channel)
+        if update is not None:
+            self.offer_update(update)
+
+    def offer_update(self, update):
+        if len(self.screen_stack) > 1:  # never interrupt a tool or dialog; ask when back on the main screen
+            self.set_timer(2, lambda: self.offer_update(update))
+            return
+        windows_channel = update.channel.name in ("scoop", "winget")
+        self.push_screen(UpdateDialog(update, awake_running=windows_channel and self.awake.poll()),
+                         lambda choice: self.update_chosen(update, choice))
+
+    def update_chosen(self, update, choice):
+        if choice == "skip":
+            updater.skip_version(update.latest)
+            self.notify(f"Version {update.latest} skipped. Run system-steward --update to install it later.")
+        elif choice == "update":
+            self.pending_update = update
+            self.run_worker(self.action_quit())
 
     # ── Views ──────────────────────────────────────────────────────────────
 

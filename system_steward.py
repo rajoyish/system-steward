@@ -393,7 +393,22 @@ def main() -> int:
     parser.add_argument("--allow-display-sleep", action="store_true",
                         help="let the display sleep even on a Modern Standby PC (it may then enter standby)")
     parser.add_argument("-t", "--duration", type=int, default=None, help="timer duration in seconds for keep awake")
+    parser.add_argument("--update", action="store_true",
+                        help="update now through Scoop, winget or Homebrew if a newer version is available")
     args = parser.parse_args()
+
+    if args.update:
+        import updater
+        channel = updater.detect_channel()
+        if channel is None:
+            print("This copy was not installed with Scoop, winget or Homebrew, so it cannot update itself.\n"
+                  "Install page: https://rajoyish.github.io/system-steward/")
+            return 0
+        update = updater.check(channel, force=True)
+        if update is None:
+            print(f"{APP_NAME} {VERSION} is the newest version {channel.label} offers.")
+            return 0
+        return updater.apply(update, ["--version"])
 
     if args.stop_awake:
         from keep_awake import AwakeSession
@@ -465,7 +480,11 @@ def main() -> int:
                     raise
                 print("Install the terminal UI with ./setup, then run ./system-steward", file=sys.stderr)
                 return 1
-            SystemStewardApp(root=args.path, timeout=args.timeout).run()
+            app = SystemStewardApp(root=args.path, timeout=args.timeout, check_updates=True)
+            app.run()
+            if app.pending_update is not None:
+                import updater
+                return updater.apply(app.pending_update, sys.argv[1:])
     except KeyboardInterrupt:
         return 130
     except OSError as exc:

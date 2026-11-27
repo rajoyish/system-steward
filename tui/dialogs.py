@@ -39,6 +39,45 @@ class InfoDialog(ModalScreen):
         self.dismiss()
 
 
+class UpdateDialog(ModalScreen[str]):
+    """Offers a newer release. Dismisses with "update", "later" or "skip"."""
+    BINDINGS = [("escape", "later", "Later"), ("u", "update", "Update now")]
+
+    def __init__(self, update, awake_running=False):
+        super().__init__()
+        self.update, self.awake_running = update, awake_running
+
+    def compose(self):
+        channel = self.update.channel
+        with Vertical(id="update-dialog", classes="dialog"):
+            yield Label("UPDATE AVAILABLE", classes="eyebrow")
+            yield Label(f"System Steward {self.update.latest} is ready", classes="dialog-title")
+            yield Static(f"You have {self.update.current}. Update now closes System Steward, updates it with "
+                         f"{channel.label}, then opens the new version.", id="update-summary")
+            if self.awake_running:
+                yield Static("Keep Awake will be stopped so the update can replace its files.", id="update-warning")
+            yield Static("U updates · Esc asks again next launch", classes="confirmation-hint")
+            with Horizontal(classes="dialog-actions"):
+                yield Button("Skip this version", id="update-skip")
+                yield Button("Later", id="update-later")
+                yield Button("Update now", id="update-now", variant="primary")
+
+    def on_mount(self):
+        self.query_one("#update-now", Button).focus()
+
+    @on(Button.Pressed, "#update-now")
+    def action_update(self):
+        self.dismiss("update")
+
+    @on(Button.Pressed, "#update-later")
+    def action_later(self):
+        self.dismiss("later")
+
+    @on(Button.Pressed, "#update-skip")
+    def skip(self):
+        self.dismiss("skip")
+
+
 class ConfirmDialog(ModalScreen[bool]):
     BINDINGS = [("escape", "cancel", "Cancel"), ("n", "cancel", "Cancel"), ("y", "confirm", "Confirm")]
 

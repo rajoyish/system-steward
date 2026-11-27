@@ -51,9 +51,14 @@ if ($LASTEXITCODE) { throw "source archive failed" }
 tar -xzf (Join-Path $Work "system-steward-$Version.tar.gz") -C $Work
 Move-Item (Join-Path $Work "system-steward-$Version") (Join-Path $Stage "app")
 
+# Exit code 75 means "update me": the app has written %TEMP%\system-steward-update.cmd and exited
+# so Scoop / the winget installer can replace its files. The update runs from one parenthesised
+# line because cmd parses that whole block up front; the update replaces this very launcher, so
+# cmd must never read another line of it afterwards (exit /b runs before it would).
 Set-Content -Encoding ascii (Join-Path $Stage "system-steward.cmd") -Value @(
     '@echo off',
     '"%~dp0python\python.exe" "%~dp0app\system_steward.py" %*',
+    'if %ERRORLEVEL% equ 75 if exist "%TEMP%\system-steward-update.cmd" (call "%TEMP%\system-steward-update.cmd" & exit /b)',
     'exit /b %ERRORLEVEL%')
 
 Write-Host "==> Smoke test"
