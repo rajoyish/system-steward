@@ -38,7 +38,8 @@ WINDOWS = Wording(
     admin_prompt="Windows shows a User Account Control prompt for tasks that need administrator rights.",
     keep_awake_engine="Windows SetThreadExecutionState",
     keep_awake_intro=("Temporarily prevent sleep with Windows SetThreadExecutionState. Power & sleep settings stay "
-                      "unchanged. Foreground sessions stop when you quit; background sessions keep running."),
+                      "unchanged. Foreground sessions stop when you quit; background sessions keep running. "
+                      "Closing the lid or choosing Sleep still puts the PC to sleep."),
     keep_awake_unavailable="Keep Awake is unavailable on this system.",
     command_example='e.g. robocopy "C:\\source folder" "D:\\backup folder" /E',
     installer_types=".exe, .msi and .iso",

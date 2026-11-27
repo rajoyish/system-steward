@@ -9,6 +9,7 @@ param(
     [switch]$Stop,
     [switch]$Status,
     [switch]$Display,
+    [switch]$AllowDisplaySleep,
     [int]$Duration,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ScriptArgs
@@ -23,6 +24,7 @@ if ($Stop) {
 } else {
     $callArgs = @{ Awake = $true }
     if ($Display) { $callArgs["Display"] = $true }
+    if ($AllowDisplaySleep) { $callArgs["AllowDisplaySleep"] = $true }
     if ($Duration -gt 0) { $callArgs["Duration"] = $Duration }
     & $Launcher @callArgs @ScriptArgs
 }

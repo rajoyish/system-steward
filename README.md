@@ -212,6 +212,8 @@ Press **k**, click **Keep awake** in the sidebar, or choose **Keep Awake** from 
 
 Choose **Idle system sleep** (`-i`, selected by default), **Display sleep** (`-d`), **Disk idle sleep** (`-m`, macOS only; Windows has no equivalent request, so the option is hidden there), or a combination. Then choose how the session ends:
 
+> **Windows laptops with Modern Standby:** many recent PCs (check with `powercfg /a`: "Standby (S0 Low Power Idle)") have no classic S3 sleep. On those, Windows enters standby as soon as the screen turns off from inactivity, and an idle-only request cannot stop that. System Steward detects this and selects **Display sleep** by default, so the screen stays on and the PC stays fully awake. If you clear it, the tool and the command line warn that the PC may still enter standby. To opt out from the command line, use `-AllowDisplaySleep` / `--allow-display-sleep`.
+
 - **When stopped / timer ends:** leave the timer blank to run until stopped, or enter seconds such as `3600` for an hour.
 - **When an existing PID exits:** enter a running process ID. An optional timer ends the session earlier. Stopping Keep Awake leaves the watched process running.
 - **When a command finishes:** enter a command and its working folder. The command runs in the background with no interactive input; recent output and its exit status appear in the tool. Quoted arguments are supported. Shell operators and expansions are not interpreted. This mode follows the command instead of a timer.
@@ -231,7 +233,8 @@ You can also start, check, and stop Keep Awake directly without launching the fu
 ```powershell
 # Quick launcher
 pwsh -File .\keep-awake.ps1                   # Start Keep Awake in background
-pwsh -File .\keep-awake.ps1 -Display          # Prevent display sleep as well
+pwsh -File .\keep-awake.ps1 -Display          # Prevent display sleep as well (default on Modern Standby PCs)
+pwsh -File .\keep-awake.ps1 -AllowDisplaySleep  # Let the display sleep even on Modern Standby (PC may enter standby)
 pwsh -File .\keep-awake.ps1 -Duration 3600    # Run for 1 hour
 pwsh -File .\keep-awake.ps1 -Status           # Check status and memory usage
 pwsh -File .\keep-awake.ps1 -Stop             # Stop session
@@ -253,7 +256,7 @@ Background sessions started from the TUI or the command line are the same sessio
 
 Choose **Review & start** and inspect the exact command before confirming. Only one app-managed session runs at a time. You can return to storage browsing while it runs; the sidebar shows when Keep Awake is active. Reopen the tool to see its PID, remaining time, and output, or choose **Stop session**.
 
-Stopping a wrapped-command session or quitting the app during command execution also terminates that command and its process group, with confirmation. The operating system still controls explicit Sleep, lid-close behavior, and low-battery sleep. Preventing disk idle sleep is a request, not continuous disk activity.
+Stopping a wrapped-command session or quitting the app during command execution also terminates that command and its process group, with confirmation. The operating system still controls explicit Sleep (Start › Power › Sleep), lid-close behavior, and low-battery sleep: Keep Awake cannot block those. If Windows rejects the sleep request, the session fails to start instead of reporting itself active. Preventing disk idle sleep is a request, not continuous disk activity.
 
 ## System maintenance and readings
 

@@ -161,6 +161,8 @@ def launch_background(options: dict[str, Any]) -> int:
     print(f"  Mode: {disp_msg}")
     print("  Persistence: Keeps running after this terminal closes; ends when the computer shuts down.")
     print("  Commands: pwsh -File .\\keep-awake.ps1 -Stop  (or -Status)")
+    if not options["display"] and win.modern_standby():
+        print(f"  Warning: {win.MODERN_STANDBY_WARNING}")
     return 0
 
 
@@ -185,7 +187,15 @@ def main(argv: list[str] | None = None) -> int:
     job = kill_on_close_job() if options["command"] else None  # noqa: F841 - kept open for our lifetime
     duration, pid = options["duration"], options["pid"]
     # ES_CONTINUOUS keeps the request in force for this thread's lifetime; no refresh loop is needed.
-    set_awake_state(options["display"])
+    try:
+        set_awake_state(options["display"])
+    except OSError as exc:
+        print(f"windows_caffeinate: {exc}", file=sys.stderr)
+        if options["daemon"]:
+            awake_state.remove(only_if_pid=os.getpid())
+        return 1
+    if not options["display"] and not options["daemon"] and win.modern_standby():
+        print(f"windows_caffeinate: {win.MODERN_STANDBY_WARNING}", file=sys.stderr)
 
     try:
         if options["command"]:

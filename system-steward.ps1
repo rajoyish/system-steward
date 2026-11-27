@@ -9,6 +9,7 @@ param(
     [switch]$Stop,
     [switch]$Status,
     [switch]$Display,
+    [switch]$AllowDisplaySleep,
     [int]$Duration,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$ScriptArgs
@@ -54,6 +55,7 @@ if ($Stop) {
 } elseif ($Awake -or $KeepAwake) {
     $ForwardArgs += "--keep-awake"
     if ($Display) { $ForwardArgs += "--display" }
+    if ($AllowDisplaySleep) { $ForwardArgs += "--allow-display-sleep" }
     if ($Duration -gt 0) { $ForwardArgs += @("-t", "$Duration") }
 }
 if ($ScriptArgs) {

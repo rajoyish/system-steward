@@ -11,7 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Input, Label, Select, Static
 
 from app_identity import BRAND
-from keep_awake import available, plan_session
+from keep_awake import available, display_required, plan_session, standby_warning
 from maintenance_tui import MaintenanceConfirm
 from native_maintenance import ANSI
 from platforms import IS_WINDOWS
@@ -40,7 +40,9 @@ class KeepAwakeScreen(Screen):
             yield Static("", id="awake-status")
             yield Label("Prevent", classes="eyebrow")
             yield Checkbox("Idle system sleep (-i)", value=True, id="awake-idle")
-            yield Checkbox("Display sleep (-d)", id="awake-display")
+            # Modern Standby PCs enter standby when the screen turns off, so keep it on by default there.
+            yield Checkbox("Display sleep (-d)", value=display_required(), id="awake-display")
+            yield Static("", id="awake-standby-note", classes="awake-copy")
             yield Checkbox("Disk idle sleep (-m)", id="awake-disk")
             yield Checkbox("Run in background (persists after closing terminal/app)", value=True, id="awake-background")
             yield Label("Session ends", classes="eyebrow")
@@ -78,9 +80,18 @@ class KeepAwakeScreen(Screen):
                 self.query_one("#awake-command", Input).value = shlex.join(plan.argv[2:])
         # SetThreadExecutionState has no disk-idle request, so -m would silently do nothing on Windows.
         self.query_one("#awake-disk", Checkbox).display = DISK_SLEEP_SUPPORTED
+        self.configure_standby_note()
         self.configure_mode()
         self.refresh_session()
         self.set_interval(1, self.refresh_session)
+
+    @on(Checkbox.Changed, "#awake-display")
+    def configure_standby_note(self):
+        display = self.query_one("#awake-display", Checkbox).value
+        warning = standby_warning("id" if display else "i")
+        note = self.query_one("#awake-standby-note", Static)
+        note.update(Text("⚠ " + warning) if warning else "")
+        note.display = warning is not None
 
     @on(Select.Changed, "#awake-mode")
     def configure_mode(self):
@@ -129,6 +140,9 @@ class KeepAwakeScreen(Screen):
             self.notify(str(exc), severity="error")
             return
         details = "Command:\n" + plan.command + "\n\nWorking folder:\n" + str(plan.cwd)
+        warning = standby_warning(plan.flags)
+        if warning:
+            details += "\n\nWarning: " + warning
         if background:
             details += "\n\nRuns in the background. Remains active even if you close the terminal or quit System Steward, and ends when your computer shuts down."
         else:

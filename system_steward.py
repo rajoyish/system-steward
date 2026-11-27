@@ -378,7 +378,10 @@ def main() -> int:
     parser.add_argument("-k", "--keep-awake", "--awake", action="store_true", help="start Keep Awake in background and exit")
     parser.add_argument("--stop-awake", action="store_true", help="stop active Keep Awake background session")
     parser.add_argument("--status-awake", action="store_true", help="check Keep Awake background status")
-    parser.add_argument("--display", action="store_true", help="prevent display sleep in addition to system sleep")
+    parser.add_argument("--display", action="store_true", help="prevent display sleep in addition to system sleep "
+                        "(the default on Windows Modern Standby PCs)")
+    parser.add_argument("--allow-display-sleep", action="store_true",
+                        help="let the display sleep even on a Modern Standby PC (it may then enter standby)")
     parser.add_argument("-t", "--duration", type=int, default=None, help="timer duration in seconds for keep awake")
     args = parser.parse_args()
 
@@ -400,13 +403,15 @@ def main() -> int:
         return 0
 
     if args.keep_awake:
-        from keep_awake import AwakeSession, plan_session, stop_hint
+        from keep_awake import AwakeSession, display_required, plan_session, standby_warning, stop_hint
+        if args.display and args.allow_display_sleep:
+            parser.error("--display and --allow-display-sleep cannot be combined")
         session = AwakeSession()
         if session.poll():
             print(f"Keep Awake is already active: {session.status()}")
             return 0
         flags = ["i"]
-        if args.display:
+        if args.display or (display_required() and not args.allow_display_sleep):
             flags.append("d")
         dur = str(args.duration) if args.duration else ""
         try:
@@ -416,7 +421,13 @@ def main() -> int:
             print(f"System Steward: {exc}", file=sys.stderr)
             return 1
         print(f"✓ {session.status()}")
+        if "d" in flags and not args.display:
+            print("  Display: kept on, because this PC uses Modern Standby (-AllowDisplaySleep / --allow-display-sleep lets it sleep).")
+        warning = standby_warning("".join(flags))
+        if warning:
+            print(f"  Warning: {warning}")
         print("  Persistence: Keeps running after this terminal closes; ends when the computer shuts down.")
+        print("  Not covered: closing the lid or choosing Sleep yourself still puts the PC to sleep.")
         print(f"  To stop: {stop_hint()}")
         return 0
 

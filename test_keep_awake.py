@@ -308,6 +308,36 @@ class HelperArgumentTests(unittest.TestCase):
             self.assertNotIn("d", plan.flags)
 
 
+class ModernStandbyTests(unittest.TestCase):
+    """Modern Standby PCs enter standby on screen-off, so idle-only Keep Awake is not enough there."""
+
+    def test_warning_only_when_display_can_sleep_on_modern_standby(self):
+        with patch("keep_awake.display_required", return_value=True):
+            self.assertIn("Modern Standby", keep_awake.standby_warning("i"))
+            self.assertIsNone(keep_awake.standby_warning("id"))
+        with patch("keep_awake.display_required", return_value=False):
+            self.assertIsNone(keep_awake.standby_warning("i"))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows power capabilities")
+    def test_display_required_follows_power_capabilities(self):
+        from platforms import windows as win
+        for value in (True, False):
+            with self.subTest(modern_standby=value), patch("platforms.windows.modern_standby", return_value=value):
+                self.assertIs(keep_awake.display_required(), value)
+        self.assertIsInstance(win.modern_standby(), bool)  # real query never raises
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows execution state")
+    def test_rejected_execution_state_is_an_error(self):
+        from platforms import windows as win
+        import windows_caffeinate as helper
+        with patch.object(win.api().kernel32, "SetThreadExecutionState", return_value=0):
+            with self.assertRaises(OSError):
+                win.set_execution_state()
+            win.set_execution_state(clear=True)  # releasing never raises
+            with patch("sys.stderr"):
+                self.assertEqual(helper.main(["-i", "-t", "0"]), 1)
+
+
 class OwnershipTests(unittest.TestCase):
     """The persisted PID is only trusted while it is still the exact process we launched."""
 
@@ -476,6 +506,28 @@ class AwakeUITests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("y")
                     await self.wait_for(pilot, lambda: not app.awake.running)
                     self.assertEqual(app.screen.query_one("#awake-command", Input).value, 'echo "a b"')
+
+    async def test_modern_standby_defaults_display_on_and_warns_when_cleared(self):
+        for required in (True, False):
+            with self.subTest(modern_standby=required), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                app = SystemStewardApp(root=root, home=root, timeout=3)
+                with patch("keep_awake_tui.display_required", return_value=required), \
+                        patch("keep_awake.display_required", return_value=required), \
+                        patch("keep_awake_tui.available", return_value=True):
+                    async with app.run_test(size=(140, 48)) as pilot:
+                        await pilot.press("k")
+                        await pilot.pause()
+                        screen = app.screen
+                        display = screen.query_one("#awake-display", Checkbox)
+                        note = screen.query_one("#awake-standby-note")
+                        self.assertIs(display.value, required)
+                        self.assertFalse(note.display)
+                        display.value = False
+                        await pilot.pause()
+                        self.assertIs(note.display, required)
+                        if required:
+                            self.assertIn("Modern Standby", str(note.content))
 
     async def test_unavailable_platform_cannot_start_a_session(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -79,6 +79,25 @@ def plan_session(flags: Iterable[str] = ("i",), mode: str = "manual", duration: 
     return AwakePlan(tuple(argv), mode, seconds, directory, background=background)
 
 
+def display_required() -> bool:
+    """Whether idle-only Keep Awake is not enough here, so display sleep should be prevented too.
+
+    True on Windows Modern Standby PCs, where the screen idle timeout also enters standby.
+    """
+    if sys.platform != "win32":
+        return False
+    from platforms.windows import modern_standby
+    return modern_standby()
+
+
+def standby_warning(flags: str) -> str | None:
+    """A user-facing warning when the chosen flags will not keep this PC awake, else None."""
+    if "d" in flags or not display_required():
+        return None
+    return ("This PC uses Modern Standby: it still enters standby when the screen turns off. "
+            "Also prevent display sleep to keep it fully awake.")
+
+
 def available() -> bool:
     if sys.platform == "darwin":
         return os.access("/usr/bin/caffeinate", os.X_OK)

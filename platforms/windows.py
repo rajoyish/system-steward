@@ -355,9 +355,40 @@ def kill_on_close_job() -> tuple[int | None, int]:
 
 
 def set_execution_state(display: bool = False, clear: bool = False) -> None:
-    """Request (or release) idle/display sleep prevention for the calling thread."""
+    """Request (or release) idle/display sleep prevention for the calling thread.
+
+    Raises OSError if Windows rejects the request (the API returns 0), so a session never
+    reports itself active while nothing is actually holding the machine awake.
+    """
     flags = ES_CONTINUOUS if clear else ES_CONTINUOUS | ES_SYSTEM_REQUIRED | (ES_DISPLAY_REQUIRED if display else 0)
-    api().kernel32.SetThreadExecutionState(flags)
+    if not api().kernel32.SetThreadExecutionState(flags) and not clear:
+        raise OSError(ctypes.get_last_error(), "SetThreadExecutionState rejected the sleep request")
+
+
+# SYSTEM_POWER_CAPABILITIES (winnt.h) is 76 bytes; AoAc ("always on, always connected",
+# i.e. Modern Standby / S0 Low Power Idle) is the BOOLEAN at offset 20.
+MODERN_STANDBY_WARNING = ("this PC uses Modern Standby, so it still enters standby when the screen turns off. "
+                          "Also prevent display sleep (-d) to keep it fully awake.")
+SYSTEM_POWER_CAPABILITIES_LEVEL = 4
+SYSTEM_POWER_CAPABILITIES_SIZE = 76
+AOAC_OFFSET = 20
+
+
+@functools.cache
+def modern_standby() -> bool:
+    """True when this PC sleeps with Modern Standby (S0 Low Power Idle) instead of S3.
+
+    On these systems the display idle timeout also enters standby, which an idle-only
+    (ES_SYSTEM_REQUIRED) request does not prevent; keeping the display on does.
+    """
+    try:
+        powrprof = ctypes.WinDLL("powrprof")
+        buffer = (ctypes.c_ubyte * SYSTEM_POWER_CAPABILITIES_SIZE)()
+        status = powrprof.CallNtPowerInformation(SYSTEM_POWER_CAPABILITIES_LEVEL, None, 0,
+                                                 buffer, SYSTEM_POWER_CAPABILITIES_SIZE)
+    except (OSError, AttributeError):
+        return False
+    return status == 0 and bool(buffer[AOAC_OFFSET])
 
 
 def spawn_detached(cmd: Sequence[str], cwd: str | os.PathLike[str]) -> int | None:
