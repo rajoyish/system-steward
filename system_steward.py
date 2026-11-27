@@ -97,13 +97,23 @@ def children(path: str | os.PathLike[str], group: str = "Projects") -> list[Entr
         return [Entry(item.name, item.path, group) for item in listing if not item.is_symlink()]
 
 
+def chrome_exe_windows(local_app_data: Path, prog_files: Path) -> Path:
+    """Chrome installs per-user under LocalAppData or machine-wide under Program Files."""
+    candidates = [
+        local_app_data / "Google/Chrome/Application/chrome.exe",
+        prog_files / "Google/Chrome/Application/chrome.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Google/Chrome/Application/chrome.exe",
+    ]
+    return next((path for path in candidates if path.is_file()), candidates[0])
+
+
 def audit_entries_windows(home: Path) -> list[Entry]:
     local_app_data = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData/Local"))
     app_data = Path(os.environ.get("APPDATA") or (home / "AppData/Roaming"))
     prog_files = Path(os.environ.get("ProgramFiles", "C:/Program Files"))
 
     specs = [
-        ("Chrome", local_app_data / "Google/Chrome/Application/chrome.exe", "Browsers"),
+        ("Chrome", chrome_exe_windows(local_app_data, prog_files), "Browsers"),
         ("Chrome profiles & site data", local_app_data / "Google/Chrome/User Data", "Browsers"),
         ("Google browser cache", local_app_data / "Google/Chrome/User Data/Default/Cache", "Browsers"),
         ("Adobe · system support", prog_files / "Adobe", "Creative"),
@@ -422,7 +432,7 @@ def main() -> int:
             return 1
         print(f"✓ {session.status()}")
         if "d" in flags and not args.display:
-            print("  Display: kept on, because this PC uses Modern Standby (-AllowDisplaySleep / --allow-display-sleep lets it sleep).")
+            print("  Display: kept on, because this PC uses Modern Standby (--allow-display-sleep lets it sleep).")
         warning = standby_warning("".join(flags))
         if warning:
             print(f"  Warning: {warning}")

@@ -122,9 +122,16 @@ def helper_python(windowless: bool = False) -> str:
 
 
 def stop_hint() -> str:
+    # Packaged installs (Scoop, winget, Homebrew, install scripts) put `system-steward` on PATH and
+    # ship without the source checkout's launcher scripts, so only point at those when they exist.
+    source_dir = Path(__file__).resolve().parent
     if sys.platform == "win32":
-        return "pwsh -File .\\keep-awake.ps1 -Stop  (or system-steward.ps1 --stop-awake)"
-    return "./system-steward --stop-awake"
+        if (source_dir / "keep-awake.ps1").is_file():
+            return "pwsh -File .\\keep-awake.ps1 -Stop  (or system-steward.ps1 --stop-awake)"
+        return "system-steward --stop-awake"
+    if (source_dir / "system-steward").is_file():
+        return "./system-steward --stop-awake"
+    return "system-steward --stop-awake"
 
 
 class Launcher:
